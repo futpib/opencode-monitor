@@ -1,0 +1,24 @@
+{
+  "name": "opencode-monitor",
+  "version": "0.1.0",
+  "description": "A Monitor-equivalent tool for OpenCode: block on an external condition without spending agent turns.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "opencode-monitor": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "node --test --test-reporter=spec",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.15.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
