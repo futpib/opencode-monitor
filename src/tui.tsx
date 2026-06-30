@@ -8,6 +8,7 @@ interface MonInfo {
   id: string
   command: string
   cwd?: string
+  description?: string
   parentSessionId: string
   status: string
   pid: number | null
@@ -36,6 +37,10 @@ function age(ms: number): string {
 
 export const tui: TuiPlugin = async (api) => {
   const [mons, setMons] = createSignal<MonInfo[]>([])
+  // Collapse state mirrors opencode's built-in MCP panel: a local signal
+  // (default expanded), toggled by clicking the header. Lives at plugin scope so
+  // it survives slot re-renders.
+  const [open, setOpen] = createSignal(true)
 
   // Hold one connection to the backend's status socket; the server pushes a
   // snapshot on every change. Reconnect on drop (server restart, etc.).
@@ -94,43 +99,51 @@ export const tui: TuiPlugin = async (api) => {
         const here = list.filter((m) => m.parentSessionId === props.session_id)
         const other = list.length - here.length
 
-        const colorFor = (s: string) =>
-          s === "running"
-            ? theme.success
-            : s === "exited"
-              ? theme.textMuted
-              : theme.warning
-
         return (
           <box flexDirection="column" gap={0}>
-            <box flexDirection="row" gap={1}>
-              <text fg={theme.text}>Monitors</text>
+            <box
+              flexDirection="row"
+              gap={1}
+              onMouseDown={() => list.length > 0 && setOpen((x) => !x)}
+            >
+              <Show when={list.length > 0}>
+                <text fg={theme.text}>{open() ? "▼" : "▶"}</text>
+              </Show>
+              <text fg={theme.text}>
+                <b>Monitors</b>
+              </text>
               <text fg={theme.textMuted}>({list.length})</text>
             </box>
 
-            <Show when={list.length === 0}>
-              <text fg={theme.textMuted}>no active monitors</text>
-            </Show>
+            <Show when={open()}>
+              <Show when={list.length === 0}>
+                <text fg={theme.textMuted}>no active monitors</text>
+              </Show>
 
-            <For each={list}>
-              {(m) => (
-                <box flexDirection="column" gap={0}>
-                  <box flexDirection="row" gap={1}>
-                    <text fg={colorFor(m.status)}>{m.status === "running" ? "●" : "○"}</text>
-                    <text fg={theme.text}>{m.id}</text>
-                    <text fg={theme.textMuted}>{m.status}</text>
+              <For each={here}>
+                {(m) => (
+                  <box flexDirection="column" gap={0}>
+                    <box flexDirection="row" gap={1}>
+                      <text fg={theme.success}>●</text>
+                      <text fg={theme.text}>{m.description ?? m.id}</text>
+                      <Show when={m.description}>
+                        <text fg={theme.textMuted}>{m.id}</text>
+                      </Show>
+                    </box>
+                    <text fg={theme.textMuted}>{m.command}</text>
+                    <text fg={theme.textMuted}>
+                      lines={m.lineCount} pid={m.pid ?? "?"} age={age(m.createdAt)}
+                    </text>
+                    <Show when={m.lastLine}>
+                      <text fg={theme.textMuted}>└ {m.lastLine}</text>
+                    </Show>
                   </box>
-                  <text fg={theme.textMuted}>{m.command}</text>
-                  <text fg={theme.textMuted}>lines={m.lineCount} pid={m.pid ?? "?"} age={age(m.createdAt)}</text>
-                  <Show when={m.lastLine}>
-                    <text fg={theme.textMuted}>└ {m.lastLine}</text>
-                  </Show>
-                </box>
-              )}
-            </For>
+                )}
+              </For>
 
-            <Show when={other > 0}>
-              <text fg={theme.textMuted}>+{other} in other session(s)</text>
+              <Show when={other > 0}>
+                <text fg={theme.textMuted}>+{other} in other session(s)</text>
+              </Show>
             </Show>
           </box>
         )

@@ -63,7 +63,39 @@ test("persistent: each stdout line wakes the session in order, then an exit noti
   assert.ok(calls[0]!.text.includes('<monitor id="') && calls[0]!.text.includes("one"))
   assert.ok(calls[1]!.text.includes("two"))
   assert.ok(calls[2]!.text.includes("command finished"))
-  assert.equal(mgr.list().find((m) => m.id === info.id)?.status, "exited")
+  // monitors disappear from the registry once done
+  assert.equal(mgr.list().find((m) => m.id === info.id), undefined, "monitor should be gone after exit")
+})
+
+test("persistent: description labels every wake and the exit notice", async () => {
+  const { client, calls } = mockClient()
+  const mgr = createMonitorManager(client)
+  mgr.arm({ command: "echo hi", parentSessionId: "ses_d", description: "errors in app.log" })
+  assert.ok(await poll(() => calls.length >= 2), `only ${calls.length} wakes`)
+  assert.ok(calls[0]!.text.includes('label="errors in app.log"'), calls[0]!.text)
+  assert.ok(calls[0]!.text.includes("hi"))
+  assert.ok(calls[1]!.text.includes('label="errors in app.log"'), calls[1]!.text)
+  assert.ok(calls[1]!.text.includes("command finished"))
+})
+
+test("timeout: a bounded monitor is reaped and emits a timed-out notice, then disappears", async () => {
+  const { client, calls } = mockClient()
+  const mgr = createMonitorManager(client)
+  const pidfile = join(tmp, "tmout.pid")
+  const info = mgr.arm({
+    command: `sleep 30 & echo $! > "${pidfile}"; wait $!`,
+    parentSessionId: "ses_t",
+    description: "bounded watch",
+    timeoutMs: 400,
+  })
+  assert.ok(await poll(() => calls.some((c) => c.text.includes("timed-out"))), "no timed-out notice")
+  const notice = calls.find((c) => c.text.includes("timed-out"))!
+  assert.ok(notice.text.includes('label="bounded watch"'), notice.text)
+  assert.ok(notice.text.includes("stopped after"), notice.text)
+  const pid = readPidSafe(pidfile)
+  await sleep(500)
+  assert.equal(alive(pid ?? undefined), false, `grandchild ${pid} survived timeout`)
+  assert.equal(mgr.list().find((m) => m.id === info.id), undefined, "timed-out monitor should be gone")
 })
 
 test("persistent: ready_pattern filters which lines wake", async () => {
