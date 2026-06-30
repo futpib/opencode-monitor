@@ -1,114 +1,106 @@
-/** @jsxImportSource @opentui/solid */
+import { createSignal, For, Show } from "solid-js"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { homedir } from "node:os"
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
-import { createMemo, For, Show } from "solid-js"
 
-interface Mon {
+interface MonInfo {
   id: string
   command: string
+  cwd?: string
+  parentSessionId: string
   status: string
-  lines: number
+  pid: number | null
+  exitCode: number | null
+  createdAt: number
+  lineCount: number
+  lastLine: string | null
 }
 
-const RE_ARMED = /<monitor_armed id="(m_[0-9a-f]+)">[\s\S]*?command:\s*([^\n]*)/
-const RE_LINE = /<monitor id="(m_[0-9a-f]+)" line="(\d+)">/
-const RE_EXITED = /<monitor id="(m_[0-9a-f]+)" exited code="(\d+)">/
-const RE_STOPPED = /\bstopped (m_[0-9a-f]+)\b/
+function statePath(): string {
+  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state")
+  return join(base, "opencode-monitor", "state.json")
+}
 
-function parseMonitors(text: string): Mon[] {
-  const armed = new Map<string, Mon>()
-  let m: RegExpExecArray | null
-  const armRe = new RegExp(RE_ARMED.source, "g")
-  while ((m = armRe.exec(text))) armed.set(m[1], { id: m[1], command: m[2].trim(), status: "running", lines: 0 })
-  const lineRe = new RegExp(RE_LINE.source, "g")
-  while ((m = lineRe.exec(text))) {
-    const e = armed.get(m[1])
-    if (e) {
-      e.lines = Math.max(e.lines, Number(m[2]))
-      e.status = "running"
-    }
+function readMonitors(): MonInfo[] {
+  try {
+    const raw = readFileSync(statePath(), "utf8")
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed?.monitors) ? (parsed.monitors as MonInfo[]) : []
+  } catch {
+    return []
   }
-  const exitRe = new RegExp(RE_EXITED.source, "g")
-  while ((m = exitRe.exec(text))) {
-    const e = armed.get(m[1])
-    if (e) e.status = "exited"
-  }
-  const stopRe = new RegExp(RE_STOPPED.source, "g")
-  while ((m = stopRe.exec(text))) armed.delete(m[1])
-  return [...armed.values()]
 }
 
-function monitorText(api: any, sessionID: string): string {
-  const msgs = (api.state.session.messages(sessionID) ?? []) as ReadonlyArray<any>
-  let out = ""
-  for (const msg of msgs.slice(-120)) {
-    const id = msg.info?.id ?? msg.id
-    if (!id) continue
-    const parts = (api.state.part(id) ?? msg.parts ?? []) as ReadonlyArray<any>
-    for (const p of parts) {
-      const t = typeof p === "string" ? p : p.text ?? p.result
-      if (typeof t === "string" && t.includes("<monitor")) out += "\n" + t
-    }
-  }
-  return out
-}
-
-function statusColor(status: string, theme: any): string {
-  if (status === "running") return theme.success
-  if (status === "exited") return theme.textMuted
-  return theme.textMuted
-}
-
-function shortCmd(cmd: string): string {
-  const t = cmd.replace(/\s+/g, " ").trim()
-  return t.length > 34 ? t.slice(0, 33) + "…" : t
-}
-
-function View(props: { api: any; sessionID: string }) {
-  const theme = () => props.api.theme.current
-  const mine = createMemo<Mon[]>(() => parseMonitors(monitorText(props.api, props.sessionID)))
-  const running = createMemo(() => mine().filter((x) => x.status === "running").length)
-
-  return (
-    <Show when={mine().length > 0}>
-      <box>
-        <box flexDirection="row" gap={1}>
-          <text fg={theme().text}>
-            <b>Monitors</b>
-            <span style={{ fg: theme().textMuted }}>
-              {" "}({running()} active, {mine().length})
-            </span>
-          </text>
-        </box>
-        <For each={mine()}>
-          {(m) => (
-            <box flexDirection="row" gap={1}>
-              <text flexShrink={0} style={{ fg: statusColor(m.status, theme()) }}>
-                •
-              </text>
-              <text fg={theme().text} wrapMode="word">
-                {m.id}{" "}
-                <span style={{ fg: theme().textMuted }}>
-                  {m.status} · {m.lines}L · {shortCmd(m.command)}
-                </span>
-              </text>
-            </box>
-          )}
-        </For>
-      </box>
-    </Show>
-  )
+function age(ms: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m${s % 60}s`
+  const h = Math.floor(m / 60)
+  return `${h}h${m % 60}m`
 }
 
 export const tui: TuiPlugin = async (api) => {
+  const [mons, setMons] = createSignal<MonInfo[]>(readMonitors())
+
+  const timer = setInterval(() => setMons(readMonitors()), 1000)
+  api.lifecycle.onDispose(() => clearInterval(timer))
+
   api.slots.register({
-    id: "opencode-monitor:sidebar",
     order: 250,
     slots: {
-      sidebar_content(props: any) {
-        return <View api={api} sessionID={props.session_id} />
+      sidebar_content(_ctx: unknown, props: { session_id: string }) {
+        const theme = api.theme.current
+        const list = mons()
+        const here = list.filter((m) => m.parentSessionId === props.session_id)
+        const other = list.length - here.length
+
+        const colorFor = (s: string) =>
+          s === "running"
+            ? theme.success
+            : s === "exited"
+              ? theme.textMuted
+              : theme.warning
+
+        return (
+          <box flexDirection="column" gap={0}>
+            <box flexDirection="row" gap={1}>
+              <text fg={theme.text}>Monitors</text>
+              <text fg={theme.textMuted}>({list.length})</text>
+            </box>
+
+            <Show when={list.length === 0}>
+              <text fg={theme.textMuted}>no active monitors</text>
+            </Show>
+
+            <For each={list}>
+              {(m) => (
+                <box flexDirection="column" gap={0}>
+                  <box flexDirection="row" gap={1}>
+                    <text fg={colorFor(m.status)}>{m.status === "running" ? "●" : "○"}</text>
+                    <text fg={theme.text}>{m.id}</text>
+                    <text fg={theme.textMuted}>{m.status}</text>
+                  </box>
+                  <text fg={theme.textMuted}>{m.command}</text>
+                  <text fg={theme.textMuted}>lines={m.lineCount} pid={m.pid ?? "?"} age={age(m.createdAt)}</text>
+                  <Show when={m.lastLine}>
+                    <text fg={theme.textMuted}>└ {m.lastLine}</text>
+                  </Show>
+                </box>
+              )}
+            </For>
+
+            <Show when={other > 0}>
+              <text fg={theme.textMuted}>+{other} in other session(s)</text>
+            </Show>
+          </box>
+        )
       },
     },
-  } as any)
+  } as never)
+
+  return undefined
 }
 
 export default { id: "opencode-monitor", tui }

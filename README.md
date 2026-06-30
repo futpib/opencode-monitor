@@ -27,13 +27,14 @@ effort while parked.
 
 ## Install (OpenCode plugin)
 
-Point OpenCode at this project from `~/.config/opencode/opencode.json`:
-
-```json
-{
-  "plugin": ["file:///home/claude/code/opencode-monitor/src/index.ts"]
-}
+```sh
+opencode plugin /home/claude/code/opencode-monitor -g
 ```
+
+This registers **both** halves of the plugin: the `monitor` / `monitor_list` /
+`monitor_stop` tools (in `opencode.json`) and the sidebar panel (in `tui.json`).
+Build the TUI panel first (see [Develop](#develop)) — OpenCode loads the compiled
+`dist/tui.jsx`.
 
 The `monitor` tool is available to every session on the next start. It is
 equivalent to a shell tool, so configure permissions the same way you would for
@@ -110,6 +111,26 @@ monitor_stop({ id: "m_1a2b3c4d" })
 Monitors are auto-stopped when their parent session is deleted. The whole
 process tree is reaped on stop (setsid session kill), so nothing leaks.
 
+## Sidebar panel
+
+Armed monitors are shown live in the OpenCode sidebar (a `sidebar_content`
+slot), next to MCP / LSP / Context. For each monitor it shows the status marker
+(`●` running, `○` exited), the id, the command, the line count / pid / age, and
+the last line received:
+
+```
+Monitors (1)
+● m_1a2b3c4d running
+tail -n0 -f /var/log/app.log
+lines=42 pid=3605900 age=1m3s
+└ connection reset by peer
+```
+
+The server engine writes the monitor registry to
+`$XDG_STATE_HOME/opencode-monitor/state.json` on every change (armed, stopped,
+status flip, throttled on each line); the panel reads that file once a second
+and re-renders. No agent turns are spent keeping the view current.
+
 ## How it works
 
 The command runs under `setsid` in its own session, so when the wait ends — for
@@ -145,7 +166,8 @@ code.
 
 ```sh
 npm install
-npm test         # node:test
+npm run build       # compile dist/tui.jsx (server.ts is loaded from source)
+npm test            # node:test
 npm run typecheck
 ```
 

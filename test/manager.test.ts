@@ -6,6 +6,8 @@ import { join } from "node:path"
 import { createMonitorManager, type MonitorClient } from "../src/manager.ts"
 
 const tmp = mkdtempSync(join(tmpdir(), "opencode-monitor-mgr-"))
+process.env.XDG_STATE_HOME = tmp
+const stateFile = join(tmp, "opencode-monitor", "state.json")
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const alive = (pid?: number) => {
   if (!pid) return false
@@ -103,6 +105,24 @@ test("cleanupBySession stops only that session's monitors", async () => {
   assert.equal(remaining[0]!.id, b.id)
   mgr.stop(b.id)
   void a
+})
+
+test("persistence: state.json mirrors the monitor registry for the TUI", async () => {
+  const { client } = mockClient()
+  const mgr = createMonitorManager(client)
+  const info = mgr.arm({ command: "sleep 30", parentSessionId: "ses_p" })
+  assert.ok(await poll(() => {
+    try {
+      const parsed = JSON.parse(readFileSync(stateFile, "utf8"))
+      return Array.isArray(parsed.monitors) && parsed.monitors.some((m: any) => m.id === info.id && m.status === "running")
+    } catch {
+      return false
+    }
+  }), "state.json did not reflect the armed monitor")
+  mgr.stop(info.id)
+  await sleep(400)
+  const parsed = JSON.parse(readFileSync(stateFile, "utf8"))
+  assert.equal(parsed.monitors.filter((m: any) => m.id === info.id).length, 0, "stopped monitor still in state.json")
 })
 
 test.after(() => rmSync(tmp, { recursive: true, force: true }))
