@@ -126,10 +126,22 @@ lines=42 pid=3605900 age=1m3s
 └ connection reset by peer
 ```
 
-The server engine writes the monitor registry to
-`$XDG_STATE_HOME/opencode-monitor/state.json` on every change (armed, stopped,
-status flip, throttled on each line); the panel reads that file once a second
-and re-renders. No agent turns are spent keeping the view current.
+The server engine exposes its live registry over a **per-server unix status
+socket** (`$XDG_RUNTIME_DIR/opencode-monitor/status-<hash>.sock`, keyed by the
+project directory so each opencode server owns exactly one). The panel holds a
+single connection and the server **pushes** a snapshot on every change (armed,
+stopped, status flip, throttled on each line) — no polling, no agent turns
+spent keeping the view current.
+
+This is the conventional status-endpoint pattern (cf. docker/systemd). opencode
+has no in-band channel for a plugin to surface server-side state to the TUI
+(the TUI's reactive `api.state` only carries built-in domains — sessions, LSP,
+MCP, todos; `tui.publish` is limited to four fixed UI-action events), and there
+is no client endpoint to invoke a tool, so an out-of-band socket is the correct
+way to reflect true backend state — independent of whether the session log is
+synced, compacted, or even has a TUI attached. Monitors run on the opencode
+**server** (a detached daemon), so they keep running and waking the session
+even with no TUI open.
 
 ## How it works
 

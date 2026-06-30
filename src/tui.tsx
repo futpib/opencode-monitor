@@ -1,7 +1,7 @@
 import { createSignal, For, Show } from "solid-js"
-import { readFileSync } from "node:fs"
+import { createConnection, type Socket } from "node:net"
+import { createHash } from "node:crypto"
 import { join } from "node:path"
-import { homedir } from "node:os"
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
 
 interface MonInfo {
@@ -17,19 +17,12 @@ interface MonInfo {
   lastLine: string | null
 }
 
-function statePath(): string {
-  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state")
-  return join(base, "opencode-monitor", "state.json")
-}
-
-function readMonitors(): MonInfo[] {
-  try {
-    const raw = readFileSync(statePath(), "utf8")
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed?.monitors) ? (parsed.monitors as MonInfo[]) : []
-  } catch {
-    return []
-  }
+// MUST stay byte-identical to the twin in src/server.ts — both sides derive the
+// same socket path from the worktree so the TUI connects to its own server.
+function statusSocketPath(worktree: string): string {
+  const dir = process.env.XDG_RUNTIME_DIR || "/tmp"
+  const h = createHash("sha256").update(worktree || "").digest("hex").slice(0, 16)
+  return join(dir, "opencode-monitor", `status-${h}.sock`)
 }
 
 function age(ms: number): string {
@@ -42,10 +35,55 @@ function age(ms: number): string {
 }
 
 export const tui: TuiPlugin = async (api) => {
-  const [mons, setMons] = createSignal<MonInfo[]>(readMonitors())
+  const [mons, setMons] = createSignal<MonInfo[]>([])
 
-  const timer = setInterval(() => setMons(readMonitors()), 1000)
-  api.lifecycle.onDispose(() => clearInterval(timer))
+  // Hold one connection to the backend's status socket; the server pushes a
+  // snapshot on every change. Reconnect on drop (server restart, etc.).
+  let stopped = false
+  let live: Socket | null = null
+  let buf = ""
+  const ingest = (chunk: Buffer) => {
+    buf += chunk.toString()
+    let nl: number
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl)
+      buf = buf.slice(nl + 1)
+      try {
+        const parsed = JSON.parse(line)
+        if (Array.isArray(parsed?.monitors)) setMons(parsed.monitors as MonInfo[])
+      } catch {
+        /* partial / non-json line */
+      }
+    }
+  }
+  const connect = () => {
+    if (stopped) return
+    let armed = false
+    const path = statusSocketPath(api.state.path.directory)
+    const sock = createConnection(path)
+    const reopen = () => {
+      if (armed || stopped) return
+      armed = true
+      setMons([])
+      setTimeout(connect, 1000)
+    }
+    sock.on("data", ingest)
+    sock.on("error", () => {
+      reopen()
+      try {
+        sock.destroy()
+      } catch {
+        /* ignore */
+      }
+    })
+    sock.on("close", reopen)
+    live = sock
+  }
+  connect()
+  api.lifecycle.onDispose(() => {
+    stopped = true
+    live?.destroy()
+  })
 
   api.slots.register({
     order: 250,

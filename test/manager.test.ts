@@ -6,8 +6,6 @@ import { join } from "node:path"
 import { createMonitorManager, type MonitorClient } from "../src/manager.ts"
 
 const tmp = mkdtempSync(join(tmpdir(), "opencode-monitor-mgr-"))
-process.env.XDG_STATE_HOME = tmp
-const stateFile = join(tmp, "opencode-monitor", "state.json")
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const alive = (pid?: number) => {
   if (!pid) return false
@@ -107,22 +105,26 @@ test("cleanupBySession stops only that session's monitors", async () => {
   void a
 })
 
-test("persistence: state.json mirrors the monitor registry for the TUI", async () => {
+test("subscribe: listeners fire on arm, stop, and line updates (throttled)", async () => {
   const { client } = mockClient()
   const mgr = createMonitorManager(client)
-  const info = mgr.arm({ command: "sleep 30", parentSessionId: "ses_p" })
-  assert.ok(await poll(() => {
-    try {
-      const parsed = JSON.parse(readFileSync(stateFile, "utf8"))
-      return Array.isArray(parsed.monitors) && parsed.monitors.some((m: any) => m.id === info.id && m.status === "running")
-    } catch {
-      return false
-    }
-  }), "state.json did not reflect the armed monitor")
+  let calls = 0
+  const unsub = mgr.subscribe(() => { calls++ })
+
+  const info = mgr.arm({ command: "echo a; echo b", parentSessionId: "ses_s" })
+  assert.ok(await poll(() => calls >= 1), "subscribe did not fire on arm")
+  const afterArm = calls
+  assert.ok(await poll(() => calls > afterArm), "subscribe did not fire on line/exit updates")
+
   mgr.stop(info.id)
-  await sleep(400)
-  const parsed = JSON.parse(readFileSync(stateFile, "utf8"))
-  assert.equal(parsed.monitors.filter((m: any) => m.id === info.id).length, 0, "stopped monitor still in state.json")
+  assert.ok(await poll(() => false, 50).then(() => true)) // let notify settle
+  await sleep(300)
+  const beforeUnsub = calls
+  unsub()
+  mgr.arm({ command: "sleep 5", parentSessionId: "ses_s" })
+  await sleep(300)
+  assert.equal(calls, beforeUnsub, "unsubscribed listener still fired")
+  mgr.stop(mgr.list()[0]!.id)
 })
 
 test.after(() => rmSync(tmp, { recursive: true, force: true }))

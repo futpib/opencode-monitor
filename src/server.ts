@@ -1,9 +1,21 @@
 import { tool } from "@opencode-ai/plugin"
 import type { Plugin } from "@opencode-ai/plugin"
+import { createServer, type Socket } from "node:net"
+import { unlinkSync, mkdirSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { join, dirname } from "node:path"
 import { runMonitor, formatResult } from "./monitor.ts"
 import { createMonitorManager } from "./manager.ts"
 
 const ID = "opencode-monitor"
+
+// MUST stay byte-identical to the twin in src/tui.tsx — both sides derive the
+// same socket path from the worktree so the TUI connects to its own server.
+export function statusSocketPath(worktree: string): string {
+  const dir = process.env.XDG_RUNTIME_DIR || "/tmp"
+  const h = createHash("sha256").update(worktree || "").digest("hex").slice(0, 16)
+  return join(dir, "opencode-monitor", `status-${h}.sock`)
+}
 
 const DESCRIPTION = `Block on, or watch, an external condition without spending agent turns. Runs a shell command and parks the agent (near-zero cost) until there is signal.
 
@@ -19,8 +31,48 @@ Examples:
 - watch a log persistently:  persistent=true, command="tail -n0 -f app.log", ready_pattern="READY|ERROR"
 - react to each event:  persistent=true, command="<your watcher that prints one line per event>"`
 
-export const server: Plugin = async ({ client }) => {
+export const server: Plugin = async ({ client, directory }) => {
   const mgr = createMonitorManager(client)
+
+  // Status socket: push the live registry to any connected TUI. Keyed by
+  // worktree so each opencode server (one per project) owns its own socket —
+  // no cross-instance clobber, no file, true backend state. opencode provides
+  // no in-band plugin server->TUI channel, so this out-of-band socket is the
+  // conventional status-endpoint pattern.
+  const sockPath = statusSocketPath(directory)
+  const clients = new Set<Socket>()
+  const snapshot = () =>
+    JSON.stringify({ updatedAt: Date.now(), monitors: mgr.list() }) + "\n"
+  const send = (s: Socket) => {
+    try {
+      s.write(snapshot())
+    } catch {
+      clients.delete(s)
+    }
+  }
+  try {
+    unlinkSync(sockPath)
+  } catch {
+    /* no stale socket */
+  }
+  try {
+    mkdirSync(dirname(sockPath), { recursive: true })
+    const srv = createServer((socket) => {
+      clients.add(socket)
+      send(socket)
+      socket.on("error", () => clients.delete(socket))
+      socket.on("close", () => clients.delete(socket))
+    })
+    srv.on("error", () => {
+      /* socket unavailable — panel just won't get pushes; tools still work */
+    })
+    srv.listen(sockPath)
+  } catch {
+    /* best-effort; the monitor tools work without the panel */
+  }
+  mgr.subscribe(() => {
+    for (const s of clients) send(s)
+  })
 
   return {
     tool: {

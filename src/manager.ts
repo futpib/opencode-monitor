@@ -1,13 +1,5 @@
 import { type ChildProcess } from "node:child_process"
-import { writeFileSync, mkdirSync } from "node:fs"
-import { join, dirname } from "node:path"
-import { homedir } from "node:os"
 import { spawnMonitored, reap, attachLines } from "./monitor.ts"
-
-function statePath(): string {
-  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state")
-  return join(base, "opencode-monitor", "state.json")
-}
 
 export interface MonitorClient {
   session: {
@@ -52,32 +44,33 @@ export interface MonitorManager {
   stop: (id: string) => boolean
   list: () => MonitorInfo[]
   cleanupBySession: (parentSessionId: string) => number
+  subscribe: (cb: () => void) => () => void
 }
 
 export function createMonitorManager(client: MonitorClient): MonitorManager {
   const monitors = new Map<string, Monitor>()
 
-  const stateFile = statePath()
-  let flushTimer: ReturnType<typeof setTimeout> | null = null
-  const persist = (immediate = true) => {
-    const write = () => {
+  const listeners = new Set<() => void>()
+  let lineTimer: ReturnType<typeof setTimeout> | null = null
+  const notify = () => {
+    for (const cb of listeners) {
       try {
-        mkdirSync(dirname(stateFile), { recursive: true })
-        const data = Array.from(monitors.values()).map(info)
-        writeFileSync(stateFile, JSON.stringify({ updatedAt: Date.now(), monitors: data }))
+        cb()
       } catch {
-        /* best-effort state observation for the TUI */
+        /* a bad listener must not break the others */
       }
     }
-    if (immediate) {
-      write()
-      return
-    }
-    if (flushTimer) return
-    flushTimer = setTimeout(() => {
-      flushTimer = null
-      write()
+  }
+  const notifyThrottled = () => {
+    if (lineTimer) return
+    lineTimer = setTimeout(() => {
+      lineTimer = null
+      notify()
     }, 250)
+  }
+  const subscribe = (cb: () => void) => {
+    listeners.add(cb)
+    return () => listeners.delete(cb)
   }
 
   const newId = (): string => {
@@ -128,13 +121,13 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
       enqueue,
     }
     monitors.set(id, mon)
-    persist()
+    notify()
 
     const forward = async (line: string, stream: "stdout" | "stderr") => {
       if (mon.abort.signal.aborted) return
       mon.lineCount += 1
       mon.lastLine = stream === "stderr" ? `[stderr] ${line}` : line
-      persist(false)
+      notifyThrottled()
       if (stream === "stderr") return
       if (pattern && !pattern.test(line)) return
       const text = `<monitor id="${id}" line="${mon.lineCount}">\n${line}\n</monitor>`
@@ -150,14 +143,14 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
 
     child.on("error", () => {
       mon.status = "error"
-      persist()
+      notify()
     })
     child.on("close", (code) => {
       if (mon.status === "running") {
         mon.status = "exited"
         mon.exitCode = code ?? null
       }
-      persist()
+      notify()
       enqueue(async () => {
         if (mon.abort.signal.aborted) return
         const text = `<monitor id="${id}" exited code="${code ?? 0}">command finished after ${mon.lineCount} line(s); last: ${JSON.stringify(mon.lastLine)}</monitor>`
@@ -179,7 +172,7 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
     if (mon.child) reap(mon.child)
     mon.status = "killed"
     monitors.delete(id)
-    persist(true)
+    notify()
     return true
   }
 
@@ -194,11 +187,11 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
         n += 1
       }
     }
-    persist(true)
+    notify()
     return n
   }
 
-  return { arm, stop, list, cleanupBySession }
+  return { arm, stop, list, cleanupBySession, subscribe }
 }
 
 function info(mon: Monitor): MonitorInfo {
