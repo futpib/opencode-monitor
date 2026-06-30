@@ -3,6 +3,8 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { runMonitor, formatResult } from "./monitor.ts"
 import { createMonitorManager } from "./manager.ts"
 
+const ID = "opencode-monitor"
+
 const DESCRIPTION = `Block on, or watch, an external condition without spending agent turns. Runs a shell command and parks the agent (near-zero cost) until there is signal.
 
 Modes:
@@ -17,7 +19,7 @@ Examples:
 - watch a log persistently:  persistent=true, command="tail -n0 -f app.log", ready_pattern="READY|ERROR"
 - react to each event:  persistent=true, command="<your watcher that prints one line per event>"`
 
-export const MonitorPlugin: Plugin = async ({ client }) => {
+export const server: Plugin = async ({ client }) => {
   const mgr = createMonitorManager(client)
 
   return {
@@ -48,17 +50,17 @@ export const MonitorPlugin: Plugin = async ({ client }) => {
         async execute(args: any, context: any) {
           const cwd = args.cwd ?? context?.directory
           if (args.persistent) {
-            const info = mgr.arm({
+            const m = mgr.arm({
               command: String(args.command),
               cwd,
               parentSessionId: context?.sessionID,
               readyPattern: args.ready_pattern,
             })
             return [
-              `<monitor_armed id="${info.id}">`,
-              `command: ${info.command}`,
-              `pid: ${info.pid ?? "?"}`,
-              `parent_session: ${info.parentSessionId}`,
+              `<monitor_armed id="${m.id}">`,
+              `command: ${m.command}`,
+              `pid: ${m.pid ?? "?"}`,
+              `parent_session: ${m.parentSessionId}`,
               `Each stdout line wakes this session. Use monitor_list / monitor_stop to observe or cancel.`,
               `</monitor_armed>`,
             ].join("\n")
@@ -111,6 +113,4 @@ export const MonitorPlugin: Plugin = async ({ client }) => {
   }
 }
 
-export { MonitorPlugin as server }
-export type { MonitorOptions, MonitorResult, MonitorOutcome } from "./monitor.ts"
-export type { MonitorInfo, ArmOptions, MonitorManager, MonitorClient } from "./manager.ts"
+export default { id: ID, server }

@@ -7,6 +7,10 @@
   "bin": {
     "opencode-monitor": "src/cli.ts"
   },
+  "exports": {
+    "./server": "./src/server.ts",
+    "./tui": "./src/tui.tsx"
+  },
   "scripts": {
     "test": "node --test --test-reporter=spec",
     "typecheck": "tsc --noEmit"
