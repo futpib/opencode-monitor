@@ -20,6 +20,12 @@ export interface MonitorResult {
   lines: string[]
 }
 
+export interface SpawnOptions {
+  command: string
+  cwd?: string
+  env?: Record<string, string>
+}
+
 const DEFAULT_MAX_LINES = 500
 
 let cachedSetsid: string | null | undefined
@@ -38,7 +44,7 @@ function setsidBin(): string | null {
   return cachedSetsid
 }
 
-function spawnChild(opts: MonitorOptions): ChildProcess {
+export function spawnMonitored(opts: SpawnOptions): ChildProcess {
   const env = opts.env ? { ...process.env, ...opts.env } : process.env
   const stdio: Array<"ignore" | "pipe"> = ["ignore", "pipe", "pipe"]
   if (process.platform === "win32") {
@@ -52,7 +58,7 @@ function spawnChild(opts: MonitorOptions): ChildProcess {
   return spawn("/bin/sh", ["-c", opts.command], { cwd: opts.cwd, env, stdio, detached: true })
 }
 
-function reap(child: ChildProcess): void {
+export function reap(child: ChildProcess): void {
   const signal = (sig: NodeJS.Signals) => {
     if (!child.pid) return
     try {
@@ -74,7 +80,7 @@ function reap(child: ChildProcess): void {
   hard.unref?.()
 }
 
-function attachLines(stream: NodeJS.ReadableStream | null, onLine: (line: string) => void): void {
+export function attachLines(stream: NodeJS.ReadableStream | null, onLine: (line: string) => void): void {
   if (!stream) return
   let buf = ""
   const drain = (eof: boolean) => {
@@ -112,7 +118,7 @@ export async function runMonitor(opts: MonitorOptions): Promise<MonitorResult> {
     }
   }
 
-  const child = spawnChild(opts)
+  const child = spawnMonitored(opts)
 
   let settled = false
   let resolve!: (r: MonitorResult) => void

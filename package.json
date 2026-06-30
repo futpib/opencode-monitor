@@ -1,6 +1,6 @@
 {
   "name": "opencode-monitor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Monitor-equivalent tool for OpenCode: block on an external condition without spending agent turns.",
   "license": "MIT",
   "type": "module",

@@ -76,18 +76,58 @@ READY
 Output is held in a ring buffer (`maxLines`, default 500) so a runaway process
 cannot blow up the context.
 
+### Persistent mode (streaming wake)
+
+For a long-lived watcher — a message queue, an event tail, anything that emits
+one event per line — use `persistent: true`. The command stays alive and **each
+stdout line is pushed back into the session as a new turn**, so the agent is
+woken per event without re-arming. The call returns immediately with a monitor
+id.
+
+```
+monitor({
+  command: "tail -n0 -f /var/log/app.log",
+  persistent: true,
+  ready_pattern: "ERROR|FATAL"   // only wake on matching lines; omit to wake on every line
+})
+```
+
+Each wake arrives as a tagged message:
+
+```
+<monitor id="m_1a2b3c4d" line="7">
+connection reset by peer
+</monitor>
+```
+
+Observe or cancel armed monitors:
+
+```
+monitor_list()                 // -> active monitors with id, pid, status, line count
+monitor_stop({ id: "m_1a2b3c4d" })
+```
+
+Monitors are auto-stopped when their parent session is deleted. The whole
+process tree is reaped on stop (setsid session kill), so nothing leaks.
+
 ## How it works
 
 The command runs under `setsid` in its own session, so when the wait ends — for
 any reason — the whole process tree is reaped with `SIGTERM` then `SIGKILL`.
 Grandchildren die too; nothing leaks.
 
-The design is deliberately **single-return**: the agent parks on one tool call
-and resumes once. That is what makes it token-cheap, and it sidesteps the
-reactive-wake gaps in OpenCode today (the async prompt path is flaky on idle
-sessions). If you ever need per-line streaming wake-ups instead, the same engine
-can drive an external loop that calls OpenCode's synchronous
-`POST /session/:id/message` — that variant is intentionally out of scope here.
+- **One-shot mode** (default) is deliberately single-return: the agent parks on
+  one tool call and resumes once, on exit / `ready_pattern` / timeout. That is
+  what makes it token-cheap.
+- **Persistent mode** keeps the process alive and forwards each stdout line to
+  the session via OpenCode's synchronous `POST /session/:id/message` (the SDK
+  `session.prompt`). That is the *reliable* wake path — deliberately not the
+  `prompt_async` endpoint, which is silently dropped on idle sessions
+  ([anomalyco/opencode#21524](https://github.com/anomalyco/opencode/issues/21524)).
+  Wakes are serialized one per turn, so a chatty watcher cannot flood the agent.
+
+This is the OpenCode counterpart of Claude Code's Monitor tool, covering both
+shapes it ships: the blocking wait and the `persistent: true` streaming watcher.
 
 ## CLI
 
