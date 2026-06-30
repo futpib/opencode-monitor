@@ -111,7 +111,6 @@ export const MonitorPlugin: Plugin = async ({ client }) => {
   }
 }
 
-export { runMonitor, formatResult } from "./monitor.ts"
-export { createMonitorManager } from "./manager.ts"
+export { MonitorPlugin as server }
 export type { MonitorOptions, MonitorResult, MonitorOutcome } from "./monitor.ts"
 export type { MonitorInfo, ArmOptions, MonitorManager, MonitorClient } from "./manager.ts"
