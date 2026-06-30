@@ -1,7 +1,4 @@
 import { type ChildProcess } from "node:child_process"
-import { writeFileSync, mkdirSync } from "node:fs"
-import { homedir } from "node:os"
-import { dirname } from "node:path"
 import { spawnMonitored, reap, attachLines } from "./monitor.ts"
 
 export interface MonitorClient {
@@ -49,33 +46,8 @@ export interface MonitorManager {
   cleanupBySession: (parentSessionId: string) => number
 }
 
-const STATE_PATH =
-  (process.env.XDG_DATA_HOME || `${homedir()}/.local/share`) + "/opencode-monitor/state.json"
-
-function flushState(monitors: Map<string, Monitor>): void {
-  const data = {
-    updatedAt: Date.now(),
-    monitors: Array.from(monitors.values()).map(info),
-  }
-  mkdirSync(dirname(STATE_PATH), { recursive: true })
-  writeFileSync(STATE_PATH, JSON.stringify(data))
-}
-
 export function createMonitorManager(client: MonitorClient): MonitorManager {
   const monitors = new Map<string, Monitor>()
-
-  let writeTimer: ReturnType<typeof setTimeout> | null = null
-  const persist = () => {
-    if (writeTimer) clearTimeout(writeTimer)
-    writeTimer = setTimeout(() => {
-      writeTimer = null
-      try {
-        flushState(monitors)
-      } catch {
-        /* state file is best-effort */
-      }
-    }, 150)
-  }
 
   const newId = (): string => {
     const hex = Array.from(crypto.getRandomValues(new Uint8Array(4)))
@@ -125,13 +97,11 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
       enqueue,
     }
     monitors.set(id, mon)
-    persist()
 
     const forward = async (line: string, stream: "stdout" | "stderr") => {
       if (mon.abort.signal.aborted) return
       mon.lineCount += 1
       mon.lastLine = stream === "stderr" ? `[stderr] ${line}` : line
-      persist()
       if (stream === "stderr") return
       if (pattern && !pattern.test(line)) return
       const text = `<monitor id="${id}" line="${mon.lineCount}">\n${line}\n</monitor>`
@@ -147,14 +117,12 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
 
     child.on("error", () => {
       mon.status = "error"
-      persist()
     })
     child.on("close", (code) => {
       if (mon.status === "running") {
         mon.status = "exited"
         mon.exitCode = code ?? null
       }
-      persist()
       enqueue(async () => {
         if (mon.abort.signal.aborted) return
         const text = `<monitor id="${id}" exited code="${code ?? 0}">command finished after ${mon.lineCount} line(s); last: ${JSON.stringify(mon.lastLine)}</monitor>`
@@ -176,7 +144,6 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
     if (mon.child) reap(mon.child)
     mon.status = "killed"
     monitors.delete(id)
-    persist()
     return true
   }
 
