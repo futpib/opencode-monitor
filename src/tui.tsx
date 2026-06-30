@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
 import { createSignal, createMemo, For, Show, onCleanup } from "solid-js"
 import { readFileSync } from "node:fs"
