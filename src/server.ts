@@ -2,19 +2,10 @@ import { tool } from "@opencode-ai/plugin"
 import type { Plugin } from "@opencode-ai/plugin"
 import { createServer, type Socket } from "node:net"
 import { unlinkSync, mkdirSync } from "node:fs"
-import { createHash } from "node:crypto"
-import { join, dirname } from "node:path"
 import { createMonitorManager } from "./manager.ts"
+import { serverSocketPath, socketDir, pruneDeadSockets } from "./identity.ts"
 
 const ID = "opencode-monitor"
-
-// MUST stay byte-identical to the twin in src/tui.tsx — both sides derive the
-// same socket path from the worktree so the TUI connects to its own server.
-export function statusSocketPath(worktree: string): string {
-  const dir = process.env.XDG_RUNTIME_DIR || "/tmp"
-  const h = createHash("sha256").update(worktree || "").digest("hex").slice(0, 16)
-  return join(dir, "opencode-monitor", `status-${h}.sock`)
-}
 
 const DESCRIPTION = `Watch an external condition without spending agent turns. Runs a shell command and arms a watcher: the agent is parked (near-zero cost) and EACH stdout line is pushed back into the session as a new turn (a <monitor> notification), so the agent is woken per event without re-arming. Returns immediately with a monitor id.
 
@@ -37,12 +28,17 @@ const clampTimeoutMs = (v: unknown): number => {
 export const server: Plugin = async ({ client, directory }) => {
   const mgr = createMonitorManager(client)
 
-  // Status socket: push the live registry to any connected TUI. Keyed by
-  // worktree so each opencode server (one per project) owns its own socket —
-  // no cross-instance clobber, no file, true backend state. opencode provides
-  // no in-band plugin server->TUI channel, so this out-of-band socket is the
-  // conventional status-endpoint pattern.
-  const sockPath = statusSocketPath(directory)
+  // Status socket: push the live registry to any connected TUI. The token must
+  // be unique per FACTORY INVOCATION, not per process — opencode hot-reloads
+  // plugins (e.g. when the source changes), so the factory can run more than
+  // once in one process. A pid token collides with itself across reloads: the
+  // second run unlinks+rebinds the same path, orphaning the first run's engine
+  // (which holds any already-armed monitors) off the filesystem. A random token
+  // gives each invocation its own socket file, all of which the TUI globs and
+  // merges. opencode provides no in-band plugin server->TUI channel, so this
+  // out-of-band socket is the conventional status-endpoint pattern.
+  const token = crypto.randomUUID().slice(0, 8)
+  const sockPath = serverSocketPath(directory, token)
   const clients = new Set<Socket>()
   const snapshot = () =>
     JSON.stringify({ updatedAt: Date.now(), monitors: mgr.list() }) + "\n"
@@ -53,13 +49,20 @@ export const server: Plugin = async ({ client, directory }) => {
       clients.delete(s)
     }
   }
+  // Remove orphaned sockets from crashed/restarted servers (incl. the legacy
+  // single-key files) before we bind our own.
+  await pruneDeadSockets(directory)
+  try {
+    mkdirSync(socketDir(), { recursive: true })
+  } catch {
+    /* best-effort */
+  }
   try {
     unlinkSync(sockPath)
   } catch {
-    /* no stale socket */
+    /* no stale socket for this pid */
   }
   try {
-    mkdirSync(dirname(sockPath), { recursive: true })
     const srv = createServer((socket) => {
       clients.add(socket)
       send(socket)
@@ -73,6 +76,15 @@ export const server: Plugin = async ({ client, directory }) => {
   } catch {
     /* best-effort; the monitor tools work without the panel */
   }
+  // Best-effort cleanup of our own socket on shutdown. SIGKILL/crash leaves it
+  // orphaned; the next server start prunes it via pruneDeadSockets.
+  process.on("exit", () => {
+    try {
+      unlinkSync(sockPath)
+    } catch {
+      /* ignore */
+    }
+  })
   mgr.subscribe(() => {
     for (const s of clients) send(s)
   })

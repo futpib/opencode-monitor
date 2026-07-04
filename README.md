@@ -113,12 +113,18 @@ The panel is **collapsible**: click the `Monitors` header (or the `▼`/`▶` ma
 to collapse it to a single line, exactly like the built-in MCP panel. Monitors
 vanish from the panel the moment they finish — only live watchers are listed.
 
-The server engine exposes its live registry over a **per-server unix status
-socket** (`$XDG_RUNTIME_DIR/opencode-monitor/status-<hash>.sock`, keyed by the
-project directory so each opencode server owns exactly one). The panel holds a
-single connection and the server **pushes** a snapshot on every change (armed,
-stopped, throttled on each line) — no polling, no agent turns spent keeping the
-view current.
+The server engine exposes its live registry over a **per-invocation unix status
+socket** (`$XDG_RUNTIME_DIR/opencode-monitor/status-<worktreeHash>-<token>.sock`,
+token random per plugin load). opencode can run more than one server process per
+worktree, and hot-reloads plugins (so the engine can exist more than once per
+process) — each incarnation hosts its own in-memory registry, so the socket
+carries a unique token rather than the pid (a pid token collides with itself
+across reloads and orphans already-armed monitors off the filesystem). The panel
+connects to **every** socket in its worktree and merges them, so a monitor armed
+in any engine is visible. The server **pushes** a snapshot on every change
+(armed, stopped, throttled on each line) — no polling, no agent turns spent
+keeping the view current. Dead sockets left by exited/crashed servers are pruned
+on the next start.
 
 This is the conventional status-endpoint pattern (cf. docker/systemd). opencode
 has no in-band channel for a plugin to surface server-side state to the TUI

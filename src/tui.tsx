@@ -1,8 +1,8 @@
 import { createSignal, For, Show } from "solid-js"
 import { createConnection, type Socket } from "node:net"
-import { createHash } from "node:crypto"
-import { join } from "node:path"
+import { readdirSync, existsSync } from "node:fs"
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
+import { worktreeSocketGlob } from "./identity.js"
 
 interface MonInfo {
   id: string
@@ -16,14 +16,6 @@ interface MonInfo {
   createdAt: number
   lineCount: number
   lastLine: string | null
-}
-
-// MUST stay byte-identical to the twin in src/server.ts — both sides derive the
-// same socket path from the worktree so the TUI connects to its own server.
-function statusSocketPath(worktree: string): string {
-  const dir = process.env.XDG_RUNTIME_DIR || "/tmp"
-  const h = createHash("sha256").update(worktree || "").digest("hex").slice(0, 16)
-  return join(dir, "opencode-monitor", `status-${h}.sock`)
 }
 
 function age(ms: number): string {
@@ -42,52 +34,114 @@ export const tui: TuiPlugin = async (api) => {
   // it survives slot re-renders.
   const [open, setOpen] = createSignal(true)
 
-  // Hold one connection to the backend's status socket; the server pushes a
-  // snapshot on every change. Reconnect on drop (server restart, etc.).
+  // Fan out across every status socket in this worktree. The plugin server
+  // factory can run more than once per opencode process (hot-reload), and there
+  // may be multiple server processes per worktree — each invocation hosts its
+  // own monitor registry on its own socket (status-<worktreeHash>-<token>.sock,
+  // token random per invocation). We connect to all of them, keep a per-socket
+  // slice, and merge — so a monitor armed in any engine shows up here. The
+  // session_id filter in the panel scopes display.
+  const { dir, prefix } = worktreeSocketGlob(api.state.path.directory)
+  const slices = new Map<string, MonInfo[]>()
   let stopped = false
-  let live: Socket | null = null
-  let buf = ""
-  const ingest = (chunk: Buffer) => {
-    buf += chunk.toString()
-    let nl: number
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl)
-      buf = buf.slice(nl + 1)
-      try {
-        const parsed = JSON.parse(line)
-        if (Array.isArray(parsed?.monitors)) setMons(parsed.monitors as MonInfo[])
-      } catch {
-        /* partial / non-json line */
+  const conns = new Map<string, Socket>()
+
+  const merge = () => setMons([...slices.values()].flat())
+
+  const connectOne = (path: string) => {
+    if (stopped || conns.has(path)) return
+    let buf = ""
+    let armed = false
+    const sock = createConnection(path)
+    const cleanup = () => {
+      conns.delete(path)
+      // Only drop the slice if the socket file is gone (server exited); a
+      // transient error on a live socket keeps its last snapshot until reconnect.
+      if (!existsSync(path)) {
+        slices.delete(path)
+        merge()
       }
     }
-  }
-  const connect = () => {
-    if (stopped) return
-    let armed = false
-    const path = statusSocketPath(api.state.path.directory)
-    const sock = createConnection(path)
     const reopen = () => {
       if (armed || stopped) return
       armed = true
-      setMons([])
-      setTimeout(connect, 1000)
-    }
-    sock.on("data", ingest)
-    sock.on("error", () => {
-      reopen()
       try {
         sock.destroy()
       } catch {
         /* ignore */
       }
+      cleanup()
+      // Re-attempt shortly; rescan() also re-discovers on its own cadence.
+      setTimeout(() => connectOne(path), 1500)
+    }
+    sock.on("data", (chunk: Buffer) => {
+      buf += chunk.toString()
+      let nl: number
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl)
+        buf = buf.slice(nl + 1)
+        try {
+          const parsed = JSON.parse(line)
+          if (Array.isArray(parsed?.monitors)) {
+            slices.set(path, parsed.monitors as MonInfo[])
+            merge()
+          }
+        } catch {
+          /* partial / non-json line */
+        }
+      }
     })
-    sock.on("close", reopen)
-    live = sock
+    sock.on("error", () => reopen())
+    sock.on("close", () => reopen())
+    conns.set(path, sock)
   }
-  connect()
+
+  // Discover sockets present now and re-scan periodically so servers started
+  // after the TUI are picked up, and vanished socket files are dropped.
+  const rescan = () => {
+    if (stopped) return
+    let names: string[]
+    try {
+      names = readdirSync(dir)
+    } catch {
+      return
+    }
+    const live = new Set<string>()
+    for (const name of names) {
+      if (!name.startsWith(prefix) || !name.endsWith(".sock")) continue
+      const path = `${dir}/${name}`
+      live.add(path)
+      connectOne(path)
+    }
+    // Drop connections whose socket file disappeared.
+    for (const path of [...conns.keys()]) {
+      if (!live.has(path)) {
+        try {
+          conns.get(path)?.destroy()
+        } catch {
+          /* ignore */
+        }
+        conns.delete(path)
+        slices.delete(path)
+      }
+    }
+    merge()
+  }
+  rescan()
+  const scanTimer = setInterval(rescan, 3000)
+  scanTimer.unref?.()
+
   api.lifecycle.onDispose(() => {
     stopped = true
-    live?.destroy()
+    clearInterval(scanTimer)
+    for (const s of conns.values()) {
+      try {
+        s.destroy()
+      } catch {
+        /* ignore */
+      }
+    }
+    conns.clear()
   })
 
   api.slots.register({
