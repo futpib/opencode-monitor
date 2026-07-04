@@ -53,7 +53,7 @@ export const server: Plugin = async ({ client, directory }) => {
   // single-key files) before we bind our own.
   await pruneDeadSockets(directory)
   try {
-    mkdirSync(socketDir(), { recursive: true })
+    mkdirSync(socketDir(), { recursive: true, mode: 0o700 })
   } catch {
     /* best-effort */
   }

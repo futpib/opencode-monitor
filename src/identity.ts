@@ -2,6 +2,8 @@ import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { createConnection } from "node:net"
 import { readdirSync, unlinkSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { xdgRuntime } from "xdg-basedir"
 
 // Shared by the server plugin and the TUI plugin. Both sides derive socket
 // locations from the worktree alone (the only identity they both reliably
@@ -23,7 +25,12 @@ export function worktreeHash(worktree: string): string {
 }
 
 export function socketDir(): string {
-  return join(process.env.XDG_RUNTIME_DIR || "/tmp", SOCKET_DIR_NAME)
+  // xdgRuntime is the spec-correct runtime dir (XDG_RUNTIME_DIR, 0700/user-
+  // private, OS-supplied) where it exists (Linux). Off-Linux it's undefined —
+  // per the spec a runtime dir must be OS-supplied, so rather than invent a
+  // non-compliant world-writable /tmp path, fall back to the per-user temp dir
+  // (os.tmpdir: per-user 0700 on macOS). The server mkdirs this 0700 regardless.
+  return join(xdgRuntime ?? tmpdir(), SOCKET_DIR_NAME)
 }
 
 /** Server side: a socket unique to one factory invocation (token = random). */

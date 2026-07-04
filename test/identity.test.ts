@@ -1,19 +1,22 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import {
+
+const XDG_BACK = process.env.XDG_RUNTIME_DIR
+const tmp = mkdtempSync(join(tmpdir(), "opencode-monitor-id-"))
+// xdg-basedir snapshots XDG_RUNTIME_DIR at import time, so set the env BEFORE
+// importing identity.ts (which pulls in xdg-basedir). This keeps socketDir()
+// inside the tmp dir instead of the real /run/user/<uid>.
+process.env.XDG_RUNTIME_DIR = tmp
+const {
   worktreeHash,
   serverSocketPath,
   worktreeSocketGlob,
   socketAlive,
   pruneDeadSockets,
-} from "../src/identity.ts"
-
-const XDG_BACK = process.env.XDG_RUNTIME_DIR
-const tmp = mkdtempSync(join(tmpdir(), "opencode-monitor-id-"))
-process.env.XDG_RUNTIME_DIR = tmp
+} = await import("../src/identity.ts")
 
 test.after(() => {
   if (XDG_BACK === undefined) delete process.env.XDG_RUNTIME_DIR

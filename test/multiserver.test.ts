@@ -4,17 +4,14 @@ import { mkdtempSync, rmSync, readdirSync, mkdirSync, writeFileSync, existsSync 
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer, createConnection, type Socket } from "node:net"
-import { serverSocketPath, worktreeSocketGlob, pruneDeadSockets, socketDir } from "../src/identity.ts"
-
-// Reproduces the original failure: two opencode server processes in the SAME
-// worktree. Under the old single-socket design the second server's unlinkSync
-// stole the path and a TUI connecting to the path saw only the second server's
-// (empty) registry. Here each server binds its own per-server socket and a fan-in
-// consumer (the TUI's shape) discovers and merges both.
 
 const XDG_BACK = process.env.XDG_RUNTIME_DIR
 const tmp = mkdtempSync(join(tmpdir(), "opencode-monitor-multi-"))
+// xdg-basedir snapshots XDG_RUNTIME_DIR at import time, so set the env BEFORE
+// importing identity.ts (which pulls in xdg-basedir). Keeps socketDir() inside
+// the tmp dir instead of the real /run/user/<uid>.
 process.env.XDG_RUNTIME_DIR = tmp
+const { serverSocketPath, worktreeSocketGlob, pruneDeadSockets, socketDir } = await import("../src/identity.ts")
 test.after(() => {
   if (XDG_BACK === undefined) delete process.env.XDG_RUNTIME_DIR
   else process.env.XDG_RUNTIME_DIR = XDG_BACK
