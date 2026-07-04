@@ -27,17 +27,20 @@ id; the agent spends roughly zero effort while parked.
 ## Install (OpenCode plugin)
 
 ```sh
-opencode plugin /home/claude/code/opencode-monitor -g
+opencode plugin opencode-monitor -g
 ```
 
 This registers **both** halves of the plugin: the `monitor` / `monitor_list` /
 `monitor_stop` tools (in `opencode.json`) and the sidebar panel (in `tui.json`).
-Build the TUI panel first (see [Develop](#develop)) — OpenCode loads the compiled
-`dist/tui.jsx`.
+OpenCode installs the published package — including the compiled `dist/tui.jsx` —
+along with its dependencies; there is no build step on your machine.
 
 The `monitor` tool is available to every session on the next start. It is
 equivalent to a shell tool, so configure permissions the same way you would for
 `bash`.
+
+Drop `-g` to install into the current project only, or pin a version with
+`opencode plugin opencode-monitor@0.2.0 -g`.
 
 ## Use it
 
@@ -173,6 +176,18 @@ npm install
 npm run build       # compile dist/tui.jsx (server.ts is loaded from source)
 npm test            # node:test
 npm run typecheck
+```
+
+### Publish
+
+`prepack` runs the build automatically, so the published tarball always contains
+the compiled `dist/tui.jsx` — OpenCode installs plugins with scripts disabled, so
+the artifact must ship prebuilt rather than being built on the user's machine:
+
+```sh
+npm version patch   # or minor / major
+npm publish
+git push --follow-tags
 ```
 
 ## License
