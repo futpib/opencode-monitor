@@ -99,9 +99,11 @@ monitor_stop({ id: "m_1a2b3c4d" }) // stop one; reaps the whole process tree
 Monitors are auto-stopped when their parent session is deleted, and the whole
 process tree is reaped on stop (`setsid` session kill), so nothing leaks.
 
-> **When _not_ to use it:** for a single one-shot "tell me when X is ready, then
-> continue" wait, prefer the `bash` tool with `run_in_background` and an
-> `until`-loop. `monitor` is for ongoing event streams, not single returns.
+> **When _not_ to use it:** for a command that finishes quickly, just call `bash`
+> directly — `monitor` is for waiting on a slow or ongoing external condition, not
+> a replacement for normal command execution. It also isn't a background *service
+> manager*: it watches a process and wakes you on its output, but does not hold a
+> long-running server open for you to keep interacting with.
 
 ## Sidebar panel
 
