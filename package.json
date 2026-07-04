@@ -4,6 +4,19 @@
   "description": "A Monitor-equivalent tool for OpenCode: block on an external condition without spending agent turns.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/futpib/opencode-monitor.git"
+  },
+  "homepage": "https://github.com/futpib/opencode-monitor#readme",
+  "bugs": "https://github.com/futpib/opencode-monitor/issues",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "monitor",
+    "agent",
+    "watcher"
+  ],
   "files": [
     "src",
     "dist",
