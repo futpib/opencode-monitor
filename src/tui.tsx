@@ -149,28 +149,29 @@ export const tui: TuiPlugin = async (api) => {
     slots: {
       sidebar_content(_ctx: unknown, props: { session_id: string }) {
         const theme = api.theme.current
-        const list = mons()
-        const here = list.filter((m) => m.parentSessionId === props.session_id)
-        const other = list.length - here.length
+        // Only this session's monitors matter; the fan-in still connects every
+        // engine (a monitor for this session may live in any of them), but we
+        // display and count just the current session.
+        const here = mons().filter((m) => m.parentSessionId === props.session_id)
 
         return (
           <box flexDirection="column" gap={0}>
             <box
               flexDirection="row"
               gap={1}
-              onMouseDown={() => list.length > 0 && setOpen((x) => !x)}
+              onMouseDown={() => here.length > 0 && setOpen((x) => !x)}
             >
-              <Show when={list.length > 0}>
+              <Show when={here.length > 0}>
                 <text fg={theme.text}>{open() ? "▼" : "▶"}</text>
               </Show>
               <text fg={theme.text}>
                 <b>Monitors</b>
               </text>
-              <text fg={theme.textMuted}>({list.length})</text>
+              <text fg={theme.textMuted}>({here.length})</text>
             </box>
 
             <Show when={open()}>
-              <Show when={list.length === 0}>
+              <Show when={here.length === 0}>
                 <text fg={theme.textMuted}>no active monitors</text>
               </Show>
 
@@ -194,10 +195,6 @@ export const tui: TuiPlugin = async (api) => {
                   </box>
                 )}
               </For>
-
-              <Show when={other > 0}>
-                <text fg={theme.textMuted}>+{other} in other session(s)</text>
-              </Show>
             </Show>
           </box>
         )
