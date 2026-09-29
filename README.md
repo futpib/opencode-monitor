@@ -13,12 +13,13 @@ process, so the agent is parked at roughly zero cost and resumes the instant the
 is signal. It's the OpenCode counterpart of Claude Code's built-in Monitor tool.
 
 ```sh
-opencode plugin opencode-monitor -g
+opencode plugin add opencode-monitor
 ```
 
-> Requires OpenCode and Node ≥ 22. Installs prebuilt — there is no build step on
-> your machine. Drop `-g` to install into the current project only, or pin a
-> version with `opencode plugin opencode-monitor@0.2.0 -g`.
+> Requires OpenCode V2 and Node ≥ 22. Installs prebuilt — there is no build step
+> on your machine. This registers the package globally. To use it in just one
+> project, add `"opencode-monitor"` to that project's `opencode.json(c)`
+> `plugins` array. Pin a release with `opencode-monitor@<version>`.
 
 ## Why
 

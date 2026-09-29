@@ -1,11 +1,8 @@
-import { tool } from "@opencode-ai/plugin"
-import type { Plugin } from "@opencode-ai/plugin"
-import { createServer, type Socket } from "node:net"
+import { Plugin } from "@opencode/plugin"
+import { createServer, type Server, type Socket } from "node:net"
 import { unlinkSync, mkdirSync } from "node:fs"
 import { createMonitorManager } from "./manager.ts"
 import { serverSocketPath, socketDir, pruneDeadSockets } from "./identity.ts"
-
-const ID = "opencode-monitor"
 
 const DESCRIPTION = `Watch an external condition without spending agent turns. Runs a shell command and arms a watcher: the agent is parked (near-zero cost) and EACH stdout line is pushed back into the session as a new turn (a <monitor> notification), so the agent is woken per event without re-arming. Returns immediately with a monitor id.
 
@@ -25,171 +22,140 @@ const clampTimeoutMs = (v: unknown): number => {
   return Math.min(Math.max(requested, 1), 3600) * 1000
 }
 
-export const server: Plugin = async ({ client, directory }) => {
-  const mgr = createMonitorManager(client)
-
-  // Status socket: push the live registry to any connected TUI. The token must
-  // be unique per FACTORY INVOCATION, not per process — opencode hot-reloads
-  // plugins (e.g. when the source changes), so the factory can run more than
-  // once in one process. A pid token collides with itself across reloads: the
-  // second run unlinks+rebinds the same path, orphaning the first run's engine
-  // (which holds any already-armed monitors) off the filesystem. A random token
-  // gives each invocation its own socket file, all of which the TUI globs and
-  // merges. opencode provides no in-band plugin server->TUI channel, so this
-  // out-of-band socket is the conventional status-endpoint pattern.
-  const token = crypto.randomUUID().slice(0, 8)
-  const sockPath = serverSocketPath(directory, token)
-  const clients = new Set<Socket>()
-  const snapshot = () =>
-    JSON.stringify({ updatedAt: Date.now(), monitors: mgr.list() }) + "\n"
-  const send = (s: Socket) => {
-    try {
-      s.write(snapshot())
-    } catch {
-      clients.delete(s)
+export default Plugin.define({
+  id: "opencode-monitor",
+  async setup(ctx) {
+    const directory = ctx.location.directory
+    const mgr = createMonitorManager(ctx)
+    const token = crypto.randomUUID().slice(0, 8)
+    const sockPath = serverSocketPath(directory, token)
+    const clients = new Set<Socket>()
+    let socketServer: Server | undefined
+    const snapshot = () => JSON.stringify({ updatedAt: Date.now(), monitors: mgr.list() }) + "\n"
+    const send = (socket: Socket) => {
+      try {
+        socket.write(snapshot())
+      } catch {
+        clients.delete(socket)
+      }
     }
-  }
-  // Remove orphaned sockets from crashed/restarted servers (incl. the legacy
-  // single-key files) before we bind our own.
-  await pruneDeadSockets(directory)
-  try {
-    mkdirSync(socketDir(), { recursive: true, mode: 0o700 })
-  } catch {
-    /* best-effort */
-  }
-  try {
-    unlinkSync(sockPath)
-  } catch {
-    /* no stale socket for this pid */
-  }
-  try {
-    const srv = createServer((socket) => {
-      clients.add(socket)
-      send(socket)
-      socket.on("error", () => clients.delete(socket))
-      socket.on("close", () => clients.delete(socket))
-    })
-    srv.on("error", () => {
-      /* socket unavailable — panel just won't get pushes; tools still work */
-    })
-    srv.listen(sockPath)
-  } catch {
-    /* best-effort; the monitor tools work without the panel */
-  }
-  // Best-effort cleanup of our own socket on shutdown. SIGKILL/crash leaves it
-  // orphaned; the next server start prunes it via pruneDeadSockets.
-  process.on("exit", () => {
+
+    await pruneDeadSockets(directory)
     try {
+      mkdirSync(socketDir(), { recursive: true, mode: 0o700 })
       unlinkSync(sockPath)
     } catch {
-      /* ignore */
+      // No stale socket (or the status socket is unavailable); tools still work.
     }
-  })
-  mgr.subscribe(() => {
-    for (const s of clients) send(s)
-  })
+    try {
+      socketServer = createServer((socket) => {
+        clients.add(socket)
+        send(socket)
+        socket.on("error", () => clients.delete(socket))
+        socket.on("close", () => clients.delete(socket))
+      })
+      socketServer.on("error", () => {})
+      socketServer.listen(sockPath)
+    } catch {
+      // The status socket is best-effort; the monitor tools work without the panel.
+    }
+    const removeSocket = () => {
+      try { unlinkSync(sockPath) } catch { /* already removed */ }
+    }
+    process.on("exit", removeSocket)
+    const unsubscribe = mgr.subscribe(() => {
+      for (const socket of clients) send(socket)
+    })
 
-  return {
-    tool: {
-      monitor: tool({
+    await ctx.tool.transform((editor) => {
+      editor.add({
+        name: "monitor",
         description: DESCRIPTION,
-        args: {
-          description: tool.schema
-            .string()
-            .describe(
-              "Short label for this monitor, shown in every wake notification and the sidebar. Be specific (e.g. 'errors in app.log', not 'watching logs').",
-            ),
-          command: tool.schema
-            .string()
-            .describe(
-              "Shell command — a long-lived watcher that prints one event per stdout line (e.g. tail -f, inotifywait -m).",
-            ),
-          persistent: tool.schema
-            .boolean()
-            .optional()
-            .describe(
-              "If true, run for the whole session (no timeout) until the command exits or monitor_stop. Default false (bounded by timeout_seconds).",
-            ),
-          ready_pattern: tool.schema
-            .string()
-            .optional()
-            .describe(
-              "Only wake on stdout lines matching this regex; omit to wake on every line.",
-            ),
-          timeout_seconds: tool.schema
-            .number()
-            .optional()
-            .describe(
-              "When persistent is false (default), auto-stop the watch after this many seconds. Default 300, capped at 3600. Ignored when persistent.",
-            ),
-          cwd: tool.schema
-            .string()
-            .optional()
-            .describe("Working directory. Defaults to the project directory."),
+        input: {
+          type: "object",
+          properties: {
+            description: { type: "string", description: "Short label shown in notifications and the sidebar." },
+            command: { type: "string", description: "Long-lived shell command printing one event per stdout line." },
+            persistent: { type: "boolean", description: "If true, watch for the whole session; otherwise use timeout_seconds." },
+            ready_pattern: { type: "string", description: "Only wake on stdout lines matching this regex." },
+            timeout_seconds: { type: "number", description: "Bounded watch timeout in seconds (default 300, max 3600)." },
+            cwd: { type: "string", description: "Working directory. Defaults to the project directory." },
+          },
+          required: ["command"],
+          additionalProperties: false,
         },
-        async execute(args: any, context: any) {
-          const cwd = args.cwd ?? context?.directory
+        async execute(input, context) {
+          const args = input as {
+            command: string; description?: string; persistent?: boolean
+            ready_pattern?: string; timeout_seconds?: number; cwd?: string
+          }
+          const cwd = args.cwd ?? directory
           const persistent = Boolean(args.persistent)
           const timeoutMs = persistent ? undefined : clampTimeoutMs(args.timeout_seconds)
           const m = mgr.arm({
-            command: String(args.command),
+            command: args.command,
             cwd,
-            description: args.description ? String(args.description) : undefined,
-            parentSessionId: context?.sessionID,
+            description: args.description,
+            parentSessionId: context.sessionID,
             readyPattern: args.ready_pattern,
             timeoutMs,
           })
-          const bounds = persistent
-            ? "session-length (no timeout)"
-            : `timeout ${Math.round((timeoutMs ?? 0) / 1000)}s`
-          const lines = [
+          const bounds = persistent ? "session-length (no timeout)" : `timeout ${Math.round((timeoutMs ?? 0) / 1000)}s`
+          return { content: [
             `<monitor_armed id="${m.id}">`,
             m.description ? `label: ${m.description}` : null,
             `command: ${m.command}`,
             `bounds: ${bounds}`,
             `pid: ${m.pid ?? "?"}`,
             `parent_session: ${m.parentSessionId}`,
-            `Each stdout line wakes this session. Use monitor_list / monitor_stop to observe or cancel.`,
-            `</monitor_armed>`,
-          ]
-          return lines.filter((l) => l !== null).join("\n")
+            "Each stdout line wakes this session. Use monitor_list / monitor_stop to observe or cancel.",
+            "</monitor_armed>",
+          ].filter((line) => line !== null).join("\n") }
         },
-      }),
-
-      monitor_list: tool({
+      })
+      editor.add({
+        name: "monitor_list",
         description: "List active monitors armed via monitor (each runs until its command exits, times out, or is stopped).",
-        args: {},
+        input: { type: "object", properties: {}, additionalProperties: false },
         async execute() {
           const items = mgr.list()
-          if (items.length === 0) return "(no active monitors)"
-          return [
+          if (items.length === 0) return { content: "(no active monitors)" }
+          return { content: [
             "active monitors:",
-            ...items.map(
-              (m) =>
-                `- ${m.id}  ${m.description ? `${JSON.stringify(m.description)}  ` : ""}pid=${m.pid ?? "?"}  lines=${m.lineCount}  cmd=${JSON.stringify(m.command)}`,
-            ),
-          ].join("\n")
+            ...items.map((m) => `- ${m.id}  ${m.description ? `${JSON.stringify(m.description)}  ` : ""}pid=${m.pid ?? "?"}  lines=${m.lineCount}  cmd=${JSON.stringify(m.command)}`),
+          ].join("\n") }
         },
-      }),
-
-      monitor_stop: tool({
+      })
+      editor.add({
+        name: "monitor_stop",
         description: "Stop and reap a monitor by id (the m_xxxx from monitor_list / monitor_armed).",
-        args: {
-          id: tool.schema.string().describe("Monitor id, e.g. m_1a2b3c4d."),
+        input: { type: "object", properties: { id: { type: "string", description: "Monitor id, e.g. m_1a2b3c4d." } }, required: ["id"], additionalProperties: false },
+        async execute(input) {
+          const { id } = input as { id: string }
+          return { content: mgr.stop(id) ? `stopped ${id}` : `no such monitor: ${id}` }
         },
-        async execute(args: any) {
-          return mgr.stop(String(args.id)) ? `stopped ${args.id}` : `no such monitor: ${args.id}`
-        },
-      }),
-    },
+      })
+    })
 
-    event: async ({ event }) => {
-      if (event?.type === "session.deleted") {
-        const sessionId = (event as { properties?: { info?: { id?: string } } }).properties?.info?.id
-        if (sessionId) mgr.cleanupBySession(sessionId)
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          if (event.type === "session.deleted") mgr.cleanupBySession(event.data.sessionID)
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) console.error("opencode-monitor event subscription failed", error)
       }
-    },
-  }
-}
+    })()
 
-export default { id: ID, server }
+    return () => {
+      controller.abort()
+      mgr.stopAll()
+      unsubscribe()
+      for (const socket of clients) socket.destroy()
+      socketServer?.close()
+      process.off("exit", removeSocket)
+      removeSocket()
+    }
+  },
+})

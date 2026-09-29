@@ -25,11 +25,8 @@
   "bin": {
     "opencode-monitor": "src/cli.ts"
   },
-  "oc-plugin": [
-    "tui"
-  ],
   "exports": {
-    "./server": {
+    ".": {
       "default": "./src/server.ts"
     },
     "./tui": {
@@ -43,10 +40,10 @@
     "build": "tsc -p tsconfig.tui.json && node -e \"const fs=require('fs'),f='dist/tui.jsx';fs.writeFileSync(f,'/** @jsxImportSource @opentui/solid */\\n'+fs.readFileSync(f,'utf8'))\""
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.15.7",
-    "@opentui/core": "^0.2.2",
-    "@opentui/solid": "^0.2.2",
-    "solid-js": "^1.8.0",
+    "@opencode/plugin": "^2.0.19",
+    "@opentui/core": "^0.5.12",
+    "@opentui/solid": "^0.5.12",
+    "solid-js": "^1.9.12",
     "xdg-basedir": "^5.1.0"
   },
   "devDependencies": {

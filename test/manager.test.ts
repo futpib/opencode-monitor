@@ -42,7 +42,8 @@ function mockClient(): { client: MonitorClient; calls: Call[] } {
   const client: MonitorClient = {
     session: {
       prompt: async (o) => {
-        calls.push({ id: o.path.id, text: o.body.parts[0]!.text })
+        assert.equal(o.delivery, "queue")
+        calls.push({ id: o.sessionID, text: o.text })
         await sleep(5)
         return {}
       },

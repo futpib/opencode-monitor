@@ -1,7 +1,7 @@
 import { createSignal, For, Show } from "solid-js"
 import { createConnection, type Socket } from "node:net"
 import { readdirSync, existsSync } from "node:fs"
-import type { TuiPlugin } from "@opencode-ai/plugin/tui"
+import { Plugin } from "@opencode/plugin/tui"
 import { worktreeSocketGlob } from "./identity.js"
 
 interface MonInfo {
@@ -27,7 +27,9 @@ function age(ms: number): string {
   return `${h}h${m % 60}m`
 }
 
-export const tui: TuiPlugin = async (api) => {
+export default Plugin.define({
+  id: "opencode-monitor.cli",
+  setup(api) {
   const [mons, setMons] = createSignal<MonInfo[]>([])
   // Collapse state mirrors opencode's built-in MCP panel: a local signal
   // (default expanded), toggled by clicking the header. Lives at plugin scope so
@@ -41,7 +43,7 @@ export const tui: TuiPlugin = async (api) => {
   // token random per invocation). We connect to all of them, keep a per-socket
   // slice, and merge — so a monitor armed in any engine shows up here. The
   // session_id filter in the panel scopes display.
-  const { dir, prefix } = worktreeSocketGlob(api.state.path.directory)
+  const { dir, prefix } = worktreeSocketGlob((api.location ?? api.data.location.default()).directory)
   const slices = new Map<string, MonInfo[]>()
   let stopped = false
   const conns = new Map<string, Socket>()
@@ -131,7 +133,7 @@ export const tui: TuiPlugin = async (api) => {
   const scanTimer = setInterval(rescan, 3000)
   scanTimer.unref?.()
 
-  api.lifecycle.onDispose(() => {
+  const dispose = () => {
     stopped = true
     clearInterval(scanTimer)
     for (const s of conns.values()) {
@@ -142,17 +144,16 @@ export const tui: TuiPlugin = async (api) => {
       }
     }
     conns.clear()
-  })
+  }
 
-  api.slots.register({
-    order: 250,
-    slots: {
-      sidebar_content(_ctx: unknown, props: { session_id: string }) {
-        const theme = api.theme.current
+  const unregister = api.ui.slot({
+    append: "sidebar.content",
+    render: ({ sessionID }) => {
+        const theme = api.theme
         // Only this session's monitors matter; the fan-in still connects every
         // engine (a monitor for this session may live in any of them), but we
         // display and count just the current session.
-        const here = mons().filter((m) => m.parentSessionId === props.session_id)
+        const here = mons().filter((m) => m.parentSessionId === sessionID)
 
         return (
           <box flexDirection="column" gap={0}>
@@ -162,35 +163,35 @@ export const tui: TuiPlugin = async (api) => {
               onMouseDown={() => here.length > 0 && setOpen((x) => !x)}
             >
               <Show when={here.length > 0}>
-                <text fg={theme.text}>{open() ? "▼" : "▶"}</text>
+               <text fg={theme.text.base}>{open() ? "▼" : "▶"}</text>
               </Show>
-              <text fg={theme.text}>
+               <text fg={theme.text.base}>
                 <b>Monitors</b>
               </text>
-              <text fg={theme.textMuted}>({here.length})</text>
+               <text fg={theme.text.muted}>({here.length})</text>
             </box>
 
             <Show when={open()}>
               <Show when={here.length === 0}>
-                <text fg={theme.textMuted}>no active monitors</text>
+                 <text fg={theme.text.muted}>no active monitors</text>
               </Show>
 
               <For each={here}>
                 {(m) => (
                   <box flexDirection="column" gap={0}>
                     <box flexDirection="row" gap={1}>
-                      <text fg={theme.success}>●</text>
-                      <text fg={theme.text}>{m.description ?? m.id}</text>
+                       <text fg={theme.status.success}>●</text>
+                       <text fg={theme.text.base}>{m.description ?? m.id}</text>
                       <Show when={m.description}>
-                        <text fg={theme.textMuted}>{m.id}</text>
+                         <text fg={theme.text.muted}>{m.id}</text>
                       </Show>
                     </box>
-                    <text fg={theme.textMuted}>{m.command}</text>
-                    <text fg={theme.textMuted}>
+                     <text fg={theme.text.muted}>{m.command}</text>
+                     <text fg={theme.text.muted}>
                       lines={m.lineCount} pid={m.pid ?? "?"} age={age(m.createdAt)}
                     </text>
                     <Show when={m.lastLine}>
-                      <text fg={theme.textMuted}>└ {m.lastLine}</text>
+                       <text fg={theme.text.muted}>└ {m.lastLine}</text>
                     </Show>
                   </box>
                 )}
@@ -198,11 +199,12 @@ export const tui: TuiPlugin = async (api) => {
             </Show>
           </box>
         )
-      },
     },
-  } as never)
+  })
 
-  return undefined
-}
-
-export default { id: "opencode-monitor", tui }
+  return () => {
+    unregister()
+    dispose()
+  }
+  },
+})

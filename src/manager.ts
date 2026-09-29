@@ -4,8 +4,9 @@ import { spawnMonitored, reap, attachLines } from "./monitor.ts"
 export interface MonitorClient {
   session: {
     prompt: (opts: {
-      path: { id: string }
-      body: { parts: Array<{ type: "text"; text: string }> }
+      sessionID: string
+      text: string
+      delivery: "queue"
     }) => Promise<unknown>
   }
 }
@@ -52,6 +53,7 @@ export interface MonitorManager {
   stop: (id: string) => boolean
   list: () => MonitorInfo[]
   cleanupBySession: (parentSessionId: string) => number
+  stopAll: () => void
   subscribe: (cb: () => void) => () => void
 }
 
@@ -95,8 +97,9 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
 
   const wake = async (sessionId: string, text: string): Promise<void> => {
     await client.session.prompt({
-      path: { id: sessionId },
-      body: { parts: [{ type: "text", text }] },
+      sessionID: sessionId,
+      text,
+      delivery: "queue",
     })
   }
 
@@ -243,7 +246,14 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
     return n
   }
 
-  return { arm, stop, list, cleanupBySession, subscribe }
+  const stopAll = () => {
+    for (const id of [...monitors.keys()]) stop(id)
+    if (lineTimer) clearTimeout(lineTimer)
+    lineTimer = null
+    listeners.clear()
+  }
+
+  return { arm, stop, list, cleanupBySession, stopAll, subscribe }
 }
 
 function info(mon: Monitor): MonitorInfo {
