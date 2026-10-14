@@ -67,6 +67,88 @@ test("persistent: each stdout line wakes the session in order, then an exit noti
   assert.equal(mgr.list().find((m) => m.id === info.id), undefined, "monitor should be gone after exit")
 })
 
+function heldClient() {
+  const calls: Array<Call & { finish: () => void }> = []
+  const client: MonitorClient = {
+    session: {
+      prompt: (o) => new Promise<void>((finish) => {
+        calls.push({ id: o.path.id, text: o.body.parts[0]!.text, finish })
+      }),
+    },
+  }
+  return { client, calls }
+}
+
+test("default steering submits later events while an earlier agent turn is still running", async (t) => {
+  const { client, calls } = heldClient()
+  const mgr = createMonitorManager(client)
+  const monitor = mgr.arm({ command: "echo first; echo second; sleep 30", parentSessionId: "ses_steer" })
+  t.after(() => {
+    mgr.stop(monitor.id)
+    for (const call of calls) call.finish()
+  })
+
+  assert.ok(await poll(() => calls.length === 2), "second event waited for the first agent turn to finish")
+  assert.ok(calls[0]!.text.includes("first"))
+  assert.ok(calls[1]!.text.includes("second"))
+  assert.equal(mgr.list()[0]!.lineCount, 2)
+})
+
+test("steering removes exited monitors even while their wake responses remain pending", async (t) => {
+  const { client, calls } = heldClient()
+  const mgr = createMonitorManager(client)
+  const monitor = mgr.arm({ command: "echo event", parentSessionId: "ses_exit" })
+  t.after(() => {
+    mgr.stop(monitor.id)
+    for (const call of calls) call.finish()
+  })
+
+  assert.ok(await poll(() => calls.length === 2), "exit notice waited for the event response")
+  assert.ok(calls[1]!.text.includes("command finished"))
+  assert.equal(mgr.list().length, 0)
+})
+
+test("steering handles rejected wake requests without holding later events", async () => {
+  const texts: string[] = []
+  const mgr = createMonitorManager({ session: { prompt: async (o) => {
+    texts.push(o.body.parts[0]!.text)
+    throw new Error("session unavailable")
+  } } })
+  mgr.arm({ command: "echo first; echo second", parentSessionId: "ses_error" })
+  assert.ok(await poll(() => texts.length === 3))
+  assert.ok(texts[0]!.includes("first"))
+  assert.ok(texts[1]!.includes("second"))
+  assert.equal(mgr.list().length, 0)
+})
+
+test("steer=false keeps one full agent turn per event and cancels queued events on stop", async (t) => {
+  const { client, calls } = heldClient()
+  const mgr = createMonitorManager(client)
+  const monitor = mgr.arm({
+    command: "echo first; echo second; echo third; sleep 30",
+    parentSessionId: "ses_serial",
+    steer: false,
+  })
+  t.after(() => {
+    mgr.stop(monitor.id)
+    for (const call of calls) call.finish()
+  })
+
+  assert.ok(await poll(() => calls.length === 1))
+  await sleep(100)
+  assert.equal(calls.length, 1, "second event bypassed the running agent turn")
+  calls[0]!.finish()
+  assert.ok(await poll(() => calls.length === 2))
+  assert.ok(calls[1]!.text.includes("second"))
+  await sleep(100)
+  assert.equal(calls.length, 2)
+
+  mgr.stop(monitor.id)
+  calls[1]!.finish()
+  await sleep(100)
+  assert.equal(calls.length, 2, "stopped monitor delivered its queued third event")
+})
+
 test("persistent: description labels every wake and the exit notice", async () => {
   const { client, calls } = mockClient()
   const mgr = createMonitorManager(client)

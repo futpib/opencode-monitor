@@ -7,12 +7,13 @@ import { serverSocketPath, socketDir, pruneDeadSockets } from "./identity.ts"
 
 const ID = "opencode-monitor"
 
-const DESCRIPTION = `Watch an external condition without spending agent turns. Runs a shell command and arms a watcher: the agent is parked (near-zero cost) and EACH stdout line is pushed back into the session as a new turn (a <monitor> notification), so the agent is woken per event without re-arming. Returns immediately with a monitor id.
+const DESCRIPTION = `Watch an external condition without spending agent turns. Runs a shell command and arms a watcher: EACH matching stdout line is pushed into the session as a <monitor> notification. Events wake an idle agent and steer an active run at its next model-turn boundary, without interrupting streaming or waiting for earlier wakes to finish. Returns immediately with a monitor id.
 
 This is the streaming-wake counterpart of a long-lived watcher — tailing a log, a message queue, an event source. For a SINGLE one-shot "tell me when X is ready" wait, prefer the bash tool with run_in_background + an until-loop; this tool is for ongoing event streams.
 
 - persistent (default false): when false the watch is bounded by timeout_seconds; when true it runs for the whole session until the command exits or monitor_stop is called.
 - ready_pattern: only wake on stdout lines matching this regex (wake on every line if omitted).
+- steer (default true): submit events as they arrive, including during active runs. Set false to preserve serialized delivery: wait for the full agent response to each wake before submitting the next event.
 - A monitor disappears from the registry (and the sidebar) once its command exits or times out; monitor_stop cancels one early.
 
 Examples:
@@ -122,6 +123,12 @@ export const server: Plugin = async ({ client, directory }) => {
             .describe(
               "When persistent is false (default), auto-stop the watch after this many seconds. Default 300, capped at 3600. Ignored when persistent.",
             ),
+          steer: tool.schema
+            .boolean()
+            .optional()
+            .describe(
+              "Default true: events steer an active run at the next model-turn boundary and wake idle sessions. Set false to wait for each wake's full agent response before submitting the next event.",
+            ),
           cwd: tool.schema
             .string()
             .optional()
@@ -138,6 +145,7 @@ export const server: Plugin = async ({ client, directory }) => {
             parentSessionId: context?.sessionID,
             readyPattern: args.ready_pattern,
             timeoutMs,
+            steer: args.steer,
           })
           const bounds = persistent
             ? "session-length (no timeout)"
@@ -147,9 +155,10 @@ export const server: Plugin = async ({ client, directory }) => {
             m.description ? `label: ${m.description}` : null,
             `command: ${m.command}`,
             `bounds: ${bounds}`,
+            `delivery: ${m.steer ? "steering" : "serialized (one full agent response per event)"}`,
             `pid: ${m.pid ?? "?"}`,
             `parent_session: ${m.parentSessionId}`,
-            `Each stdout line wakes this session. Use monitor_list / monitor_stop to observe or cancel.`,
+            `Matching stdout lines ${m.steer ? "steer active runs and wake idle sessions" : "wake this session one turn at a time"}. Use monitor_list / monitor_stop to observe or cancel.`,
             `</monitor_armed>`,
           ]
           return lines.filter((l) => l !== null).join("\n")

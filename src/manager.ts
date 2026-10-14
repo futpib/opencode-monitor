@@ -17,6 +17,8 @@ export interface ArmOptions {
   parentSessionId: string
   readyPattern?: string
   description?: string
+  /** Submit events during an active turn. False waits for each wake's full response. */
+  steer?: boolean
   /** When set, the watch is auto-stopped (reaped) after this many ms. */
   timeoutMs?: number
 }
@@ -29,6 +31,7 @@ export interface MonitorInfo {
   cwd?: string
   description?: string
   parentSessionId: string
+  steer: boolean
   status: MonitorStatus
   pid: number | null
   exitCode: number | null
@@ -93,11 +96,17 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
     return `m_${hex}`
   }
 
-  const wake = async (sessionId: string, text: string): Promise<void> => {
-    await client.session.prompt({
-      path: { id: sessionId },
+  const wake = async (mon: Monitor, text: string): Promise<void> => {
+    const response = client.session.prompt({
+      path: { id: mon.parentSessionId },
       body: { parts: [{ type: "text", text }] },
+    }).catch(() => {
+      /* session gone or busy; leave for next line / backstop */
     })
+    // The synchronous message route admits input into an active run before
+    // waiting for its response, and reliably wakes idle sessions. Waiting here
+    // would hold later events behind the entire run instead of steering it.
+    if (!mon.steer) await response
   }
 
   const arm = (opts: ArmOptions): MonitorInfo => {
@@ -124,6 +133,7 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
       cwd: opts.cwd,
       description: opts.description,
       parentSessionId: opts.parentSessionId,
+      steer: opts.steer !== false,
       status: "running",
       pid: child.pid ?? null,
       exitCode: null,
@@ -148,7 +158,7 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
       if (pattern && !pattern.test(line)) return
       const text = `<monitor id="${id}" line="${mon.lineCount}"${label}>\n${line}\n</monitor>`
       try {
-        await wake(mon.parentSessionId, text)
+        await wake(mon, text)
       } catch {
         /* session gone or busy; leave for next line / backstop */
       }
@@ -203,7 +213,7 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
         }
         const text = `<monitor id="${id}" ${tag}${label}>${detail}</monitor>`
         try {
-          await wake(mon.parentSessionId, text)
+          await wake(mon, text)
         } catch {
           /* session gone */
         }
