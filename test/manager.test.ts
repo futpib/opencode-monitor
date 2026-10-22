@@ -1,9 +1,10 @@
+import { v1Delivery, type MonitorClient } from "../src/delivery.ts"
 import test from "node:test"
 import assert from "node:assert/strict"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createMonitorManager, type MonitorClient } from "../src/manager.ts"
+import { createMonitorManager } from "../src/manager.ts"
 
 const tmp = mkdtempSync(join(tmpdir(), "opencode-monitor-mgr-"))
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -53,7 +54,7 @@ function mockClient(): { client: MonitorClient; calls: Call[] } {
 
 test("persistent: each stdout line wakes the session in order, then an exit notice", async () => {
   const { client, calls } = mockClient()
-  const mgr = createMonitorManager(client)
+  const mgr = createMonitorManager(v1Delivery(client))
   const info = mgr.arm({ command: "echo one; echo two", parentSessionId: "ses_a" })
   assert.ok(await poll(() => calls.length >= 3), `only ${calls.length} wakes: ${JSON.stringify(calls)}`)
   assert.deepEqual(
@@ -81,7 +82,7 @@ function heldClient() {
 
 test("default steering submits later events while an earlier agent turn is still running", async (t) => {
   const { client, calls } = heldClient()
-  const mgr = createMonitorManager(client)
+  const mgr = createMonitorManager(v1Delivery(client))
   const monitor = mgr.arm({ command: "echo first; echo second; sleep 30", parentSessionId: "ses_steer" })
   t.after(() => {
     mgr.stop(monitor.id)
@@ -96,7 +97,7 @@ test("default steering submits later events while an earlier agent turn is still
 
 test("steering removes exited monitors even while their wake responses remain pending", async (t) => {
   const { client, calls } = heldClient()
-  const mgr = createMonitorManager(client)
+  const mgr = createMonitorManager(v1Delivery(client))
   const monitor = mgr.arm({ command: "echo event", parentSessionId: "ses_exit" })
   t.after(() => {
     mgr.stop(monitor.id)
@@ -110,10 +111,10 @@ test("steering removes exited monitors even while their wake responses remain pe
 
 test("steering handles rejected wake requests without holding later events", async () => {
   const texts: string[] = []
-  const mgr = createMonitorManager({ session: { prompt: async (o) => {
+  const mgr = createMonitorManager(v1Delivery({ session: { prompt: async (o) => {
     texts.push(o.body.parts[0]!.text)
     throw new Error("session unavailable")
-  } } })
+  } } }))
   mgr.arm({ command: "echo first; echo second", parentSessionId: "ses_error" })
   assert.ok(await poll(() => texts.length === 3))
   assert.ok(texts[0]!.includes("first"))
@@ -123,7 +124,7 @@ test("steering handles rejected wake requests without holding later events", asy
 
 test("steer=false keeps one full agent turn per event and cancels queued events on stop", async (t) => {
   const { client, calls } = heldClient()
-  const mgr = createMonitorManager(client)
+  const mgr = createMonitorManager(v1Delivery(client))
   const monitor = mgr.arm({
     command: "echo first; echo second; echo third; sleep 30",
     parentSessionId: "ses_serial",
@@ -151,7 +152,7 @@ test("steer=false keeps one full agent turn per event and cancels queued events 
 
 test("persistent: description labels every wake and the exit notice", async () => {
   const { client, calls } = mockClient()
-  const mgr = createMonitorManager(client)
+  const mgr = createMonitorManager(v1Delivery(client))
   mgr.arm({ command: "echo hi", parentSessionId: "ses_d", description: "errors in app.log" })
   assert.ok(await poll(() => calls.length >= 2), `only ${calls.length} wakes`)
   assert.ok(calls[0]!.text.includes('label="errors in app.log"'), calls[0]!.text)
@@ -162,7 +163,7 @@ test("persistent: description labels every wake and the exit notice", async () =
 
 test("timeout: a bounded monitor is reaped and emits a timed-out notice, then disappears", async () => {
   const { client, calls } = mockClient()
-  const mgr = createMonitorManager(client)
+  const mgr = createMonitorManager(v1Delivery(client))
   const pidfile = join(tmp, "tmout.pid")
   const info = mgr.arm({
     command: `sleep 30 & echo $! > "${pidfile}"; wait $!`,
@@ -182,7 +183,7 @@ test("timeout: a bounded monitor is reaped and emits a timed-out notice, then di
 
 test("persistent: ready_pattern filters which lines wake", async () => {
   const { client, calls } = mockClient()
-  const mgr = createMonitorManager(client)
+  const mgr = createMonitorManager(v1Delivery(client))
   mgr.arm({ command: "echo skip; echo HIT; echo skip2", parentSessionId: "ses_b", readyPattern: "^HIT$" })
   assert.ok(await poll(() => calls.some((c) => c.text.includes("HIT"))))
   await sleep(200)
@@ -193,7 +194,7 @@ test("persistent: ready_pattern filters which lines wake", async () => {
 
 test("stop reaps the process tree (grandchild dies) and is idempotent", async () => {
   const { client } = mockClient()
-  const mgr = createMonitorManager(client)
+  const mgr = createMonitorManager(v1Delivery(client))
   const pidfile = join(tmp, "stop.pid")
   const info = mgr.arm({ command: `sleep 30 & echo $! > "${pidfile}"; wait $!`, parentSessionId: "ses_c" })
   assert.ok(await poll(() => readPidSafe(pidfile) !== null))
@@ -206,7 +207,7 @@ test("stop reaps the process tree (grandchild dies) and is idempotent", async ()
 
 test("cleanupBySession stops only that session's monitors", async () => {
   const { client } = mockClient()
-  const mgr = createMonitorManager(client)
+  const mgr = createMonitorManager(v1Delivery(client))
   const a = mgr.arm({ command: "sleep 30", parentSessionId: "ses_a" })
   const b = mgr.arm({ command: "sleep 30", parentSessionId: "ses_b" })
   assert.equal(mgr.list().length, 2)
@@ -221,7 +222,7 @@ test("cleanupBySession stops only that session's monitors", async () => {
 
 test("subscribe: listeners fire on arm, stop, and line updates (throttled)", async () => {
   const { client } = mockClient()
-  const mgr = createMonitorManager(client)
+  const mgr = createMonitorManager(v1Delivery(client))
   let calls = 0
   const unsub = mgr.subscribe(() => { calls++ })
 

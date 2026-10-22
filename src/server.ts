@@ -1,5 +1,8 @@
 import { tool } from "@opencode-ai/plugin"
 import type { Plugin } from "@opencode-ai/plugin"
+import type { Context } from "@opencode/plugin/promise/plugin"
+import { v1Delivery, v2Delivery } from "./delivery.ts"
+import type { MonitorDelivery } from "./manager.ts"
 import { createServer, type Socket } from "node:net"
 import { unlinkSync, mkdirSync } from "node:fs"
 import { createMonitorManager } from "./manager.ts"
@@ -9,7 +12,7 @@ const ID = "opencode-monitor"
 
 const DESCRIPTION = `Watch an external condition without spending agent turns. Runs a shell command and arms a watcher: EACH matching stdout line is pushed into the session as a <monitor> notification. Events wake an idle agent and steer an active run at its next model-turn boundary, without interrupting streaming or waiting for earlier wakes to finish. Returns immediately with a monitor id.
 
-This is the streaming-wake counterpart of a long-lived watcher — tailing a log, a message queue, an event source. For a SINGLE one-shot "tell me when X is ready" wait, prefer the bash tool with run_in_background + an until-loop; this tool is for ongoing event streams.
+This is the streaming-wake counterpart of a long-lived watcher — tailing a log, a message queue, an event source. For a SINGLE one-shot "tell me when X is ready" wait, use a background shell command with an until-loop (v1: bash run_in_background; v2: shell background=true); this tool is for ongoing event streams.
 
 - persistent (default false): when false the watch is bounded by timeout_seconds; when true it runs for the whole session until the command exits or monitor_stop is called.
 - ready_pattern: only wake on stdout lines matching this regex (wake on every line if omitted).
@@ -26,8 +29,8 @@ const clampTimeoutMs = (v: unknown): number => {
   return Math.min(Math.max(requested, 1), 3600) * 1000
 }
 
-export const server: Plugin = async ({ client, directory }) => {
-  const mgr = createMonitorManager(client)
+async function createServerPlugin(deliver: MonitorDelivery, directory: string) {
+  const mgr = createMonitorManager(deliver)
 
   // Status socket: push the live registry to any connected TUI. The token must
   // be unique per FACTORY INVOCATION, not per process — opencode hot-reloads
@@ -63,34 +66,44 @@ export const server: Plugin = async ({ client, directory }) => {
   } catch {
     /* no stale socket for this pid */
   }
-  try {
-    const srv = createServer((socket) => {
-      clients.add(socket)
-      send(socket)
-      socket.on("error", () => clients.delete(socket))
-      socket.on("close", () => clients.delete(socket))
-    })
-    srv.on("error", () => {
-      /* socket unavailable — panel just won't get pushes; tools still work */
-    })
-    srv.listen(sockPath)
-  } catch {
-    /* best-effort; the monitor tools work without the panel */
-  }
+  const srv = createServer((socket) => {
+    clients.add(socket)
+    send(socket)
+    socket.on("error", () => clients.delete(socket))
+    socket.on("close", () => clients.delete(socket))
+  })
+  srv.on("error", () => {
+    /* socket unavailable — panel just won't get pushes; tools still work */
+  })
+  srv.listen(sockPath)
   // Best-effort cleanup of our own socket on shutdown. SIGKILL/crash leaves it
   // orphaned; the next server start prunes it via pruneDeadSockets.
-  process.on("exit", () => {
+  const removeSocket = () => {
     try {
       unlinkSync(sockPath)
     } catch {
       /* ignore */
     }
-  })
-  mgr.subscribe(() => {
+  }
+  process.on("exit", removeSocket)
+  const unsubscribe = mgr.subscribe(() => {
     for (const s of clients) send(s)
   })
+  let disposed = false
 
   return {
+    mgr,
+    dispose() {
+      if (disposed) return
+      disposed = true
+      unsubscribe()
+      mgr.dispose()
+      for (const socket of clients) socket.destroy()
+      clients.clear()
+      srv.close()
+      process.off("exit", removeSocket)
+      removeSocket()
+    },
     tool: {
       monitor: tool({
         description: DESCRIPTION,
@@ -135,7 +148,7 @@ export const server: Plugin = async ({ client, directory }) => {
             .describe("Working directory. Defaults to the project directory."),
         },
         async execute(args: any, context: any) {
-          const cwd = args.cwd ?? context?.directory
+          const cwd = args.cwd ?? directory
           const persistent = Boolean(args.persistent)
           const timeoutMs = persistent ? undefined : clampTimeoutMs(args.timeout_seconds)
           const m = mgr.arm({
@@ -191,14 +204,57 @@ export const server: Plugin = async ({ client, directory }) => {
         },
       }),
     },
+  }
+}
 
+export const server: Plugin = async ({ client, directory }) => {
+  const plugin = await createServerPlugin(v1Delivery(client), directory)
+  return {
+    tool: plugin.tool,
     event: async ({ event }) => {
-      if (event?.type === "session.deleted") {
-        const sessionId = (event as { properties?: { info?: { id?: string } } }).properties?.info?.id
-        if (sessionId) mgr.cleanupBySession(sessionId)
-      }
+      if (event.type === "session.deleted") plugin.mgr.cleanupBySession(event.properties.info.id)
+      if (event.type === "server.instance.disposed") plugin.dispose()
     },
   }
 }
 
-export default { id: ID, server }
+async function setup(ctx: Context) {
+  const plugin = await createServerPlugin(v2Delivery(ctx.session), ctx.location.directory)
+  const abort = new AbortController()
+  const dispose = () => {
+    abort.abort()
+    plugin.dispose()
+  }
+  try {
+    await ctx.tool.transform((editor) => {
+      for (const [name, definition] of Object.entries(plugin.tool)) {
+        editor.add({
+          name,
+          description: definition.description,
+          input: tool.schema.object(definition.args),
+          options: { codemode: false },
+          execute: async (args, context) => {
+            const result = await definition.execute(args as never, context as never)
+            return { content: typeof result === "string" ? result : result.output }
+          },
+        })
+      }
+    })
+    const events = ctx.event.subscribe({ signal: abort.signal })
+    void (async () => {
+      for await (const event of events) {
+        if (event.type === "session.deleted") plugin.mgr.cleanupBySession(event.data.sessionID)
+      }
+    })().catch(() => {
+      // The stream closes with the plugin's location scope. Reap its watchers.
+      dispose()
+    })
+    return dispose
+  } catch (error) {
+    dispose()
+    throw error
+  }
+}
+
+// Each host selects its own entry point; both share tools and the watcher engine.
+export default { id: ID, server, setup }

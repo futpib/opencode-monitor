@@ -1,6 +1,6 @@
 {
   "name": "opencode-monitor",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A Monitor-equivalent tool for OpenCode: block on an external condition without spending agent turns.",
   "license": "MIT",
   "type": "module",
@@ -20,7 +20,9 @@
   "files": [
     "src",
     "dist",
-    "README.md"
+    "README.md",
+    "server.ts",
+    "tui.js"
   ],
   "bin": {
     "opencode-monitor": "src/cli.ts"
@@ -44,13 +46,14 @@
   },
   "dependencies": {
     "@opencode-ai/plugin": "1.15.7",
-    "@opentui/core": "^0.2.2",
-    "@opentui/solid": "^0.2.2",
+    "@opentui/core": "^0.6.6",
+    "@opentui/solid": "^0.6.6",
     "solid-js": "^1.8.0",
     "xdg-basedir": "^5.1.0"
   },
   "devDependencies": {
     "@babel/core": "7.28.0",
+    "@opencode/plugin": "2.1.2",
     "@types/node": "^22.0.0",
     "babel-preset-solid": "1.9.12",
     "typescript": "^5.6.0"

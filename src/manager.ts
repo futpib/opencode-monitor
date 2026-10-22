@@ -1,14 +1,12 @@
 import { type ChildProcess } from "node:child_process"
 import { spawnMonitored, reap, attachLines } from "./monitor.ts"
 
-export interface MonitorClient {
-  session: {
-    prompt: (opts: {
-      path: { id: string }
-      body: { parts: Array<{ type: "text"; text: string }> }
-    }) => Promise<unknown>
-  }
-}
+export type MonitorDelivery = (input: {
+  sessionID: string
+  text: string
+  steer: boolean
+  signal: AbortSignal
+}) => Promise<void>
 
 export interface ArmOptions {
   command: string
@@ -51,6 +49,7 @@ interface Monitor extends MonitorInfo {
 }
 
 export interface MonitorManager {
+  dispose: () => void
   arm: (opts: ArmOptions) => MonitorInfo
   stop: (id: string) => boolean
   list: () => MonitorInfo[]
@@ -63,7 +62,7 @@ function attr(s?: string): string {
   return s.replace(/["\n\r]/g, " ").trim().slice(0, 80)
 }
 
-export function createMonitorManager(client: MonitorClient): MonitorManager {
+export function createMonitorManager(deliver: MonitorDelivery): MonitorManager {
   const monitors = new Map<string, Monitor>()
 
   const listeners = new Set<() => void>()
@@ -97,16 +96,7 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
   }
 
   const wake = async (mon: Monitor, text: string): Promise<void> => {
-    const response = client.session.prompt({
-      path: { id: mon.parentSessionId },
-      body: { parts: [{ type: "text", text }] },
-    }).catch(() => {
-      /* session gone or busy; leave for next line / backstop */
-    })
-    // The synchronous message route admits input into an active run before
-    // waiting for its response, and reliably wakes idle sessions. Waiting here
-    // would hold later events behind the entire run instead of steering it.
-    if (!mon.steer) await response
+    await deliver({ sessionID: mon.parentSessionId, text, steer: mon.steer, signal: mon.abort.signal })
   }
 
   const arm = (opts: ArmOptions): MonitorInfo => {
@@ -253,7 +243,13 @@ export function createMonitorManager(client: MonitorClient): MonitorManager {
     return n
   }
 
-  return { arm, stop, list, cleanupBySession, subscribe }
+  const dispose = () => {
+    for (const id of [...monitors.keys()]) stop(id)
+    if (lineTimer) clearTimeout(lineTimer)
+    listeners.clear()
+  }
+
+  return { arm, stop, list, cleanupBySession, subscribe, dispose }
 }
 
 function info(mon: Monitor): MonitorInfo {
